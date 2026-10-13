@@ -1,0 +1,37 @@
+# Local context
+CONTEXT.local.md
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Large raw dataset
+data/raw/*
+!data/raw/.gitkeep
+
+# Temporary files
+*.log
+*.tmp
+
+# Reproducible intermediate datasets
+data/interim/*.csv
+
+# Processed datasets (large derived files)
+data/processed/*
+!data/processed/.gitkeep
