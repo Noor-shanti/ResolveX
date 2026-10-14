@@ -35,7 +35,7 @@
 - Project Study prepared for supervisor review.
 
 ## M2 — Data Preparation & EDA
-**Status:** Not Started<br>
+**Status:** Completed<br>
 **Summary:** Prepare final datasets and perform EDA.
 
 ### Definition of Done (DoD)
@@ -45,21 +45,26 @@
 - Data is ready for model and retrieval development.
 
 ### Tasks
-- [ ] Finalize the ML dataset.
-- [ ] Prepare the technical knowledge base for retrieval.
-- [ ] Preserve code blocks, commands, and required metadata.
-- [ ] Prepare duplicate-question relationships for retrieval evaluation.
-- [ ] Perform data cleaning and preprocessing.
-- [ ] Analyze class distribution and text characteristics.
-- [ ] Analyze relevant temporal and answer-related characteristics.
-- [ ] Create EDA visualizations.
-- [ ] Document preprocessing decisions and final datasets.
+- [x] Perform data cleaning and preprocessing. → `src/data/preprocessing.py`
+- [x] Finalize the ML dataset. → `src/data/preprocessing.py`, `notebooks/03_data_preparation.ipynb`
+- [x] Prepare the technical knowledge base for retrieval. → `src/data/preprocessing.py`, `notebooks/03_data_preparation.ipynb`
+- [x] Preserve code blocks, commands, and required metadata. → `src/data/preprocessing.py`
+- [x] Prepare duplicate-question relationships for retrieval evaluation. → `notebooks/03_data_preparation.ipynb`
+- [x] Analyze class distribution and text characteristics. → `notebooks/04_eda.ipynb`
+- [x] Analyze relevant temporal and answer-related characteristics. → `notebooks/04_eda.ipynb`
+- [x] Create EDA visualizations. → `notebooks/04_eda.ipynb`
+- [x] Document preprocessing decisions and final datasets. → `notebooks/03_data_preparation.ipynb`
 
-### Expected Outcomes
-- Prepared dataset ready for ML classification.
-- Prepared knowledge base ready for retrieval/RAG development.
-- Prepared retrieval evaluation data.
-- Completed EDA with documented findings.
+### Outcomes
+- **177,194 single-category questions** prepared as ML classification candidates.
+- **318,537 questions and 523,728 answers** prepared for knowledge retrieval.
+- **41,931 duplicate relationships** preserved, including **41,411 pairs** suitable for retrieval evaluation.
+- Preprocessing and validation completed and documented in `notebooks/03_data_preparation.ipynb`.
+- EDA completed with visualizations and findings in `notebooks/04_eda.ipynb`.
+
+### Limitations
+- Category labels are tag-derived and require semantic review before model evaluation.
+- Community answers may be outdated and are not verified solutions.
 
 ## M3 — ML Classification
 **Status:** Not Started<br>

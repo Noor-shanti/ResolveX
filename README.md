@@ -41,11 +41,11 @@ Resolve or Escalate
 
 ## Current Status
 
-**M1 — Project Research & Feasibility — Completed**
+**M2 - Data Preparation & EDA — Completed**
 
-The product scope, target users, Ubuntu/Linux prototype domain, Ask Ubuntu data feasibility, technical issue taxonomy, workflow, and initial system architecture have been defined and confirmed.
+Classification candidates, a technical evidence corpus and duplicate relationships have been prepared and analyzed. Preprocessing decisions and limitations are documented in `notebooks/03_data_preparation.ipynb`. Model training and retrieval development have not started.
 
-Next: M2 — Data Preparation & EDA.
+Next: M3 — ML Classification.
 
 ## Architecture
 
