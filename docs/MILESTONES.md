@@ -87,16 +87,19 @@
 - [x] Inspect predictions on ticket-like examples and document the limits of transferring forum results to support tickets.
 - [x] Freeze development choices, then evaluate once on the held-out test set; report Accuracy, Macro F1, Weighted F1, per-class Precision/Recall/F1 and a Confusion Matrix.
 - [x] Save the fitted pipeline and confidence policy, and provide a reusable prediction function.
+- [x] Run a post-evaluation diagnostic comparing the classifier with a literal tag-keyword rule on the held-out test set (no tuning or model changes). → `notebooks/06_label_circularity_check.ipynb`
 
 ### Outcomes
 - A TF-IDF + Logistic Regression classifier selected using validation data.
 - Label review, duplicate-aware splits, confidence calibration and evaluation documented in `notebooks/05_ml_classification.ipynb`.
 - Held-out Accuracy **89.68%**, Macro F1 **0.8856**, and Weighted F1 **0.8967** against tag-derived labels.
 - A saved classifier with calibrated confidence and a validation-based human-review flag, with reusable prediction logic in `src/models/classification.py`.
+- Diagnostic on the test set: classifier agreement with weak labels 89.68% versus 66.13% for a literal tag-keyword rule; on the 3,430 questions with no literal tag match to their own label, agreement is 68.63% and 45.42% receive an additional review flag.
 
 ### Limitations
 - Scores measure agreement with weak labels on forum data, not verified enterprise-ticket diagnoses.
 - Confidence-based review does not detect every ambiguous or unsupported request; engineers retain final review.
+- The keyword comparison is one literal baseline and does not establish label-noise rates or that the classifier understands the text; a small qualitative review of ten no-match examples (AI-assisted) found three weakly supported labels.
 
 ## M4 — RAG & Retrieval
 **Status:** Not Started<br>
