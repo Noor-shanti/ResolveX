@@ -67,7 +67,7 @@
 - Community answers may be outdated and are not verified solutions.
 
 ## M3 — ML Classification
-**Status:** Not Started<br>
+**Status:** Completed<br>
 **Summary:** Train and evaluate a baseline technical issue classifier using question titles and bodies.
 
 ### Definition of Done (DoD)
@@ -78,21 +78,25 @@
 - The fitted pipeline is saved and can predict a category, confidence and human-review flag for new text.
 
 ### Tasks
-- [ ] Review a sample from each category and document incorrect or ambiguous labels.
-- [ ] Create train/validation/test splits using full duplicate relationships; check identical and near-duplicate text across splits.
-- [ ] Build a TF-IDF + Logistic Regression pipeline using Title and BodyText only; fit text features on training data only.
-- [ ] Compare the baseline with a majority-class reference and evaluate class weighting on validation data.
-- [ ] Select model settings using validation data, then evaluate the selected model on the held-out test set.
-- [ ] Report Accuracy, Macro F1, Weighted F1, per-class Precision/Recall/F1 and a Confusion Matrix.
-- [ ] Analyze mistakes, confidence calibration and multi-category cases; select a human-review threshold using validation data.
-- [ ] Inspect predictions on ticket-like examples and document the limits of transferring forum results to support tickets.
-- [ ] Save the fitted pipeline and provide a reusable prediction function.
+- [x] Review a sample from each category and document incorrect or ambiguous labels.
+- [x] Create train/validation/test splits using full duplicate relationships; check identical and near-duplicate text across splits.
+- [x] Build a TF-IDF + Logistic Regression pipeline using Title and BodyText only; fit text features on training data only.
+- [x] Compare the baseline with a majority-class reference and evaluate class weighting on validation data.
+- [x] Select model settings using validation data.
+- [x] Analyze mistakes, confidence calibration and multi-category cases; select a human-review threshold using validation data.
+- [x] Inspect predictions on ticket-like examples and document the limits of transferring forum results to support tickets.
+- [x] Freeze development choices, then evaluate once on the held-out test set; report Accuracy, Macro F1, Weighted F1, per-class Precision/Recall/F1 and a Confusion Matrix.
+- [x] Save the fitted pipeline and confidence policy, and provide a reusable prediction function.
 
-### Expected Outcomes
-- Reusable data splitting, training, and prediction logic.
-- A notebook documenting label review, experiments, evaluation, and findings.
-- A saved model pipeline and reproducible split assignments.
-- Category predictions with confidence scores and a validation-based human-review flag.
+### Outcomes
+- A TF-IDF + Logistic Regression classifier selected using validation data.
+- Label review, duplicate-aware splits, confidence calibration and evaluation documented in `notebooks/05_ml_classification.ipynb`.
+- Held-out Accuracy **89.68%**, Macro F1 **0.8856**, and Weighted F1 **0.8967** against tag-derived labels.
+- A saved classifier with calibrated confidence and a validation-based human-review flag, with reusable prediction logic in `src/models/classification.py`.
+
+### Limitations
+- Scores measure agreement with weak labels on forum data, not verified enterprise-ticket diagnoses.
+- Confidence-based review does not detect every ambiguous or unsupported request; engineers retain final review.
 
 ## M4 — RAG & Retrieval
 **Status:** Not Started<br>

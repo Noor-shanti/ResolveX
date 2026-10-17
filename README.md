@@ -41,11 +41,11 @@ Resolve or Escalate
 
 ## Current Status
 
-**M2 - Data Preparation & EDA — Completed**
+**M3 — ML Classification — Completed**
 
-Classification candidates, a technical evidence corpus and duplicate relationships have been prepared and analyzed. Preprocessing decisions and limitations are documented in `notebooks/03_data_preparation.ipynb`. Model training and retrieval development have not started.
+A baseline technical issue classifier has been trained and evaluated on held-out Ask Ubuntu questions, with calibrated confidence and a human-review flag. Results and limitations are documented in `notebooks/05_ml_classification.ipynb`.
 
-Next: M3 — ML Classification.
+Next: M4 — RAG & Retrieval.
 
 ## Architecture
 
