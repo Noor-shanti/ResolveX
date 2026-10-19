@@ -102,8 +102,38 @@
 - The keyword comparison is one literal baseline and does not establish label-noise rates or that the classifier understands the text; a small qualitative review of ten no-match examples (AI-assisted) found three weakly supported labels.
 
 ## M4 — RAG & Retrieval
-**Status:** Not Started<br>
-**Summary:** Build and evaluate technical knowledge retrieval.
+**Status:** In Progress<br>
+**Summary:** Build and evaluate retrieval of relevant Ask Ubuntu cases and technical evidence.
+
+### Definition of Done (DoD)
+- Evidence is prepared with technical content and source attribution preserved.
+- A duplicate-aware benchmark separates development and held-out query groups and excludes self matches.
+- BM25, dense and hybrid retrieval are compared using development queries.
+- Frozen retrieval settings are evaluated on held-out queries with Recall@K and MRR.
+- Reusable retrieval returns ranked evidence and sources, with findings and limitations documented.
+
+### Tasks
+- [x] Define answer selection, fallback and chunking policies while preserving commands and code. → `src/retrieval.py`, `notebooks/07_retrieval_preparation.ipynb`
+- [x] Preserve source metadata and resolve available author attribution. → `src/retrieval.py`
+- [x] Build a benchmark using recorded duplicate targets and full-graph query groups. Exclude self matches and evaluate by question ID. → `src/retrieval.py`, `notebooks/07_retrieval_preparation.ipynb`
+- [x] Implement a BM25 baseline. → `src/retrieval.py`
+- [x] Evaluate a pretrained dense embedding model with a local vector index on a development pilot. → `notebooks/07_retrieval_preparation.ipynb`
+- [ ] Compare BM25, dense and hybrid retrieval on development queries; select settings using retrieval quality and runtime.
+- [ ] Inspect failure cases, source age and weak-evidence behavior on development and ticket-like examples.
+- [ ] Freeze development choices, then report Recall@1/5/10 and MRR@10 once on held-out queries.
+- [ ] Save reproducible indexes and benchmark assignments, and provide a reusable retrieval function.
+
+### Current Outcomes
+- **240,555 cases** prepared with **618,330 chunks**, preserving technical content and source metadata.
+- A duplicate-aware benchmark with **28,721 development** and **2,924 held-out queries**.
+- BM25 evaluated on **100 development queries**: Recall@10 **0.2400** and MRR@10 **0.1198**.
+- A MiniLM + FAISS pilot built on **2,000 cases** and evaluated on **56 development queries**; its results are not directly comparable with full-corpus BM25.
+
+### Expected Outcomes
+- Reusable evidence preparation, indexing and retrieval logic.
+- A notebook documenting the benchmark, comparisons, findings and limitations.
+- A selected retriever returning ranked evidence and sources for M5.
+- Reproducible local artifacts and held-out retrieval metrics.
 
 ## M5 — Technical Support Agent
 **Status:** Not Started<br>

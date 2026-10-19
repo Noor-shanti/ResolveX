@@ -41,11 +41,11 @@ Resolve or Escalate
 
 ## Current Status
 
-**M3 — ML Classification — Completed**
+**M4 — RAG & Retrieval — In Progress**
 
-A baseline technical issue classifier has been trained and evaluated on held-out Ask Ubuntu questions, with calibrated confidence and a human-review flag. Results and limitations are documented in `notebooks/05_ml_classification.ipynb`.
+The classifier is available and retrieval development is in progress. Evidence preparation, the benchmark and initial retrieval experiments are documented in `notebooks/07_retrieval_preparation.ipynb`.
 
-Next: M4 — RAG & Retrieval.
+Next: Complete retrieval comparisons and held-out evaluation.
 
 ## Architecture
 

@@ -5,3 +5,5 @@ scikit-learn>=1.5
 joblib>=1.4
 numpy>=1.26
 scipy>=1.11
+sentence-transformers>=3.0
+faiss-cpu>=1.8
