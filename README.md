@@ -41,11 +41,11 @@ Resolve or Escalate
 
 ## Current Status
 
-**M4 — RAG & Retrieval — In Progress**
+**M4 — RAG & Retrieval — Completed**
 
-The classifier is available and retrieval development is in progress. Evidence preparation, the benchmark and initial retrieval experiments are documented in `notebooks/07_retrieval_preparation.ipynb`.
+The classifier and retrieval prototype are available. MiniLM + FAISS was selected after comparing BM25, dense and hybrid search on a shared sample. Evaluation on 44 held-out queries over 5,000 candidate cases achieved Recall@10 **0.8864** and MRR@10 **0.7188**. Results and limitations are documented in `notebooks/07_retrieval_preparation.ipynb`.
 
-Next: Complete retrieval comparisons and held-out evaluation.
+Next: **M5 — Technical Support Agent**.
 
 ## Architecture
 

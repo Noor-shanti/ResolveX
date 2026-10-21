@@ -102,7 +102,7 @@
 - The keyword comparison is one literal baseline and does not establish label-noise rates or that the classifier understands the text; a small qualitative review of ten no-match examples (AI-assisted) found three weakly supported labels.
 
 ## M4 — RAG & Retrieval
-**Status:** In Progress<br>
+**Status:** Completed<br>
 **Summary:** Build and evaluate retrieval of relevant Ask Ubuntu cases and technical evidence.
 
 ### Definition of Done (DoD)
@@ -118,22 +118,22 @@
 - [x] Build a benchmark using recorded duplicate targets and full-graph query groups. Exclude self matches and evaluate by question ID. → `src/retrieval.py`, `notebooks/07_retrieval_preparation.ipynb`
 - [x] Implement a BM25 baseline. → `src/retrieval.py`
 - [x] Evaluate a pretrained dense embedding model with a local vector index on a development pilot. → `notebooks/07_retrieval_preparation.ipynb`
-- [ ] Compare BM25, dense and hybrid retrieval on development queries; select settings using retrieval quality and runtime.
-- [ ] Inspect failure cases, source age and weak-evidence behavior on development and ticket-like examples.
-- [ ] Freeze development choices, then report Recall@1/5/10 and MRR@10 once on held-out queries.
-- [ ] Save reproducible indexes and benchmark assignments, and provide a reusable retrieval function.
+- [x] Compare BM25, dense and hybrid retrieval on development queries; select settings using retrieval quality and runtime. → `src/retrieval.py`, `notebooks/07_retrieval_preparation.ipynb`
+- [x] Inspect failure cases, source age and weak-evidence behavior on development and ticket-like examples. → `src/retrieval.py`, `notebooks/07_retrieval_preparation.ipynb`
+- [x] Freeze development choices, then report Recall@1/5/10 and MRR@10 once on held-out queries. → `src/retrieval.py`, `notebooks/07_retrieval_preparation.ipynb`
+- [x] Save reproducible indexes and benchmark assignments, and provide a reusable retrieval function. → `src/retrieval.py`, `notebooks/07_retrieval_preparation.ipynb`
 
-### Current Outcomes
-- **240,555 cases** prepared with **618,330 chunks**, preserving technical content and source metadata.
-- A duplicate-aware benchmark with **28,721 development** and **2,924 held-out queries**.
-- BM25 evaluated on **100 development queries**: Recall@10 **0.2400** and MRR@10 **0.1198**.
-- A MiniLM + FAISS pilot built on **2,000 cases** and evaluated on **56 development queries**; its results are not directly comparable with full-corpus BM25.
+### Outcomes
+- **240,555 cases** prepared with **618,330 chunks**, preserving technical content and source attribution.
+- BM25, dense and hybrid retrieval compared on the same **5,000 cases** and **145 development queries**; MiniLM + FAISS selected.
+- On **44 held-out queries**: Recall@1 **0.6364**, Recall@5 **0.8409**, Recall@10 **0.8864** and MRR@10 **0.7188**.
+- Source age, retrieval mistakes and ticket-like examples reviewed in `notebooks/07_retrieval_preparation.ipynb`.
+- Saved indexes and a reusable retriever in `src/retrieval.py` return ranked evidence, sources and a development-derived weak-evidence flag; **20.45%** of held-out queries are flagged.
 
-### Expected Outcomes
-- Reusable evidence preparation, indexing and retrieval logic.
-- A notebook documenting the benchmark, comparisons, findings and limitations.
-- A selected retriever returning ranked evidence and sources for M5.
-- Reproducible local artifacts and held-out retrieval metrics.
+### Limitations
+- Final evaluation covers a sampled corpus and 44 eligible held-out queries, not the full knowledge base or real support tickets.
+- Recorded duplicate targets are incomplete relevance labels; community answers require technical and version review.
+- The weak-evidence flag is a heuristic and can miss unsuitable advice.
 
 ## M5 — Technical Support Agent
 **Status:** Not Started<br>
