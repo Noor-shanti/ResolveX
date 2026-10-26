@@ -41,15 +41,28 @@ Resolve or Escalate
 
 ## Current Status
 
-**Current focus: M6 - Backend & API - In Progress**
+**Current focus: M5 - Technical Support Agent - In Progress**
 
 The classifier and retrieval prototype are available. MiniLM + FAISS was selected after comparing BM25, dense and hybrid search on a shared sample. Evaluation on 44 held-out queries over 5,000 candidate cases achieved Recall@10 **0.8864** and MRR@10 **0.7188**. Results and limitations are documented in `notebooks/07_retrieval_preparation.ipynb`.
 
 M5 - Technical Support Agent remains **In Progress**. Its latest 12-case evaluation found response and evidence issues that still need review. Agent recommendations remain experimental; findings are documented in `notebooks/08_technical_support_agent.ipynb`.
 
-M6 will expose the existing classifier, retriever and current support-agent workflow through FastAPI. M5 evaluation continues separately, with its status and human-review information preserved by the API.
+M6 - Backend & API is **Completed**. FastAPI exposes the existing classifier, retriever and support-agent workflow while preserving source links and human-review information. M5 evaluation continues separately; completing the API does not validate recommendation quality.
 
-Next: **Build the FastAPI endpoints**.
+Next: **M7 - Streamlit Application**.
+
+## Run the Backend Locally
+
+Install the project requirements, then start the API from the repository root:
+
+```bash
+python -m pip install -r requirements.txt
+uvicorn src.api:app --host 127.0.0.1 --port 8000
+```
+
+Open `http://127.0.0.1:8000/docs` for the interactive API reference. The service expects the saved classifier, retrieval and Ubuntu documentation artifacts under `data/processed/`. Set `GEMINI_API_KEY` in the local `.env` file to enable ticket analysis; classification remains available without it.
+
+The API provides `GET /health/live`, `GET /health/ready`, `POST /api/v1/classify` and `POST /api/v1/analyze`.
 
 ## Architecture
 

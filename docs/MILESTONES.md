@@ -170,7 +170,7 @@
 - The documentation set is incomplete, and source links do not by themselves prove that a recommendation is correct. Engineers must review the advice.
 
 ## M6 — Backend & API
-**Status:** In Progress<br>
+**Status:** Completed<br>
 **Summary:** Integrate components through FastAPI.
 
 ### Definition of Done (DoD)
@@ -181,17 +181,17 @@
 - Local endpoint examples cover classification, a support-agent response, a review-required response and an invalid request.
 
 ### Tasks
-- [ ] Define request and response schemas for health, classification and ticket analysis.
-- [ ] Build a FastAPI app that loads the existing components once and exposes the planned endpoints.
-- [ ] Add an adapter between the API and the M5 agent so internal agent changes do not require changes to the API response contract.
-- [ ] Preserve the agent's steps, sources and human-review status in the API response; treat recommendations as experimental while M5 remains In Progress.
-- [ ] Validate inputs and handle model, retrieval, LLM and API failures with clear error responses.
-- [ ] Run local requests for classification, a support-agent response, a review-required case and an invalid request; check response fields and source links.
+- [x] Define request and response schemas for health, classification and ticket analysis. -> `src/api.py`
+- [x] Build a FastAPI app that loads the classifier, retriever and support agent once at startup. -> `src/api.py`
+- [x] Add an adapter between the API and the M5 agent so internal agent changes do not require changes to the API response contract. -> `src/api.py`
+- [x] Preserve the agent's steps, sources and human-review status in the API response; recommendations remain experimental while M5 is In Progress. -> `src/api.py`
+- [x] Validate inputs and handle model, retrieval, LLM and API failures with clear error responses. -> `src/api.py`
+- [x] Verify classification and readiness with local artifacts; test support-agent, review-required and invalid-request responses through the API. -> `tests/test_api.py`
 
-### Expected Outcomes
-- A local FastAPI backend connecting the saved classifier, retriever and current support-agent workflow.
-- Consistent API responses that preserve evidence and human-review information.
-- Example requests and results ready for the M7 interface. M5 can continue improving recommendation quality behind the adapter without reopening M6, provided the API contract stays stable.
+### Outcomes
+- FastAPI exposes liveness, readiness, classification and ticket-analysis endpoints; model artifacts load once during application startup.
+- A stable response adapter preserves category, confidence, steps, citations, source metadata and human-review status.
+- Local artifact smoke checks and four API tests passed. No live Gemini generation was used for verification.
 
 ## M7 — Streamlit Application
 **Status:** Not Started<br>

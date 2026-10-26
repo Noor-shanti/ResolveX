@@ -177,6 +177,48 @@ def build_official_docs(root, model, refresh=False):
     return retriever, manifest
 
 
+def load_official_docs(root, model):
+    """Load the prepared official-docs index without network access or rebuilding."""
+    root = Path(root).resolve()
+    output = root / "data/processed/retrieval/official_docs"
+    manifest_path = output / "manifest.json"
+    index_path = output / "official_docs.faiss"
+    records_path = output / "chunks.joblib"
+    required = (manifest_path, index_path, records_path)
+    missing = [str(path) for path in required if not path.is_file()]
+    if missing:
+        raise FileNotFoundError(
+            "Prepared Ubuntu documentation index is missing; run notebook 08 preparation first"
+        )
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("allowlist_fingerprint") != _fingerprint(OFFICIAL_SOURCES):
+        raise ValueError("Ubuntu documentation index is outdated; rebuild it from notebook 08")
+    if manifest.get("embedding_model") != MODEL_ID or manifest.get("embedding_revision") != MODEL_REVISION:
+        raise ValueError("Ubuntu documentation index uses a different embedding model")
+
+    records = joblib.load(records_path)
+    expected_sources = {
+        record["url"]: record["content_hash"]
+        for record in records if record.get("part") == 0
+    }
+    actual_hashes = {
+        "official_docs.faiss": _file_hash(index_path),
+        "chunks.joblib": _file_hash(records_path),
+    }
+    if manifest.get("source_hashes") != expected_sources or manifest.get("file_hashes") != actual_hashes:
+        raise ValueError("Ubuntu documentation index does not match its manifest")
+    if manifest.get("failed_sources"):
+        raise ValueError("Ubuntu documentation index has failed sources; review it in notebook 08")
+
+    index = faiss.read_index(str(index_path))
+    if index.ntotal != len(records) or not records:
+        raise ValueError("Ubuntu documentation index and chunk records do not match")
+    retriever = OfficialDocsRetriever(model, index, records)
+    retriever.manifest = manifest
+    return retriever, manifest
+
+
 def _file_hash(path):
     digest = hashlib.sha256()
     with Path(path).open("rb") as handle:
