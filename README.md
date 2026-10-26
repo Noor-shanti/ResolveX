@@ -41,11 +41,15 @@ Resolve or Escalate
 
 ## Current Status
 
-**M4 — RAG & Retrieval — Completed**
+**Current focus: M6 - Backend & API - In Progress**
 
 The classifier and retrieval prototype are available. MiniLM + FAISS was selected after comparing BM25, dense and hybrid search on a shared sample. Evaluation on 44 held-out queries over 5,000 candidate cases achieved Recall@10 **0.8864** and MRR@10 **0.7188**. Results and limitations are documented in `notebooks/07_retrieval_preparation.ipynb`.
 
-Next: **M5 — Technical Support Agent**.
+M5 - Technical Support Agent remains **In Progress**. Its latest 12-case evaluation found response and evidence issues that still need review. Agent recommendations remain experimental; findings are documented in `notebooks/08_technical_support_agent.ipynb`.
+
+M6 will expose the existing classifier, retriever and current support-agent workflow through FastAPI. M5 evaluation continues separately, with its status and human-review information preserved by the API.
+
+Next: **Build the FastAPI endpoints**.
 
 ## Architecture
 

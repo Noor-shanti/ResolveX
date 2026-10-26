@@ -136,12 +136,62 @@
 - The weak-evidence flag is a heuristic and can miss unsuitable advice.
 
 ## M5 — Technical Support Agent
-**Status:** Not Started<br>
-**Summary:** Build the ticket analysis and resolution workflow.
+**Status:** In Progress<br>
+**Summary:** Use classification, retrieval and Ubuntu documentation to draft support recommendations for engineer review.
+
+### Definition of Done (DoD)
+- The agent combines the saved classifier and retriever with official Ubuntu documentation and an LLM.
+- Recommendations include their sources; the agent requests review when evidence is weak or incompatible.
+- A 12-case qualitative evaluation covers all six categories and reviews source relevance, technical correctness, release fit and abstention.
+- At least one useful recommendation is checked against its source, and findings and limitations are documented.
+
+### Tasks
+- [x] Connect the saved classifier and retriever to an LLM and add Ubuntu documentation as a separate source. -> `src/support_agent.py`, `src/official_docs.py`
+- [x] Return the category, evidence, suggested steps and human-review reasons with source links. -> `src/support_agent.py`
+- [x] Add checks for missing details, weak or unrelated evidence, release compatibility and unsafe steps. -> `src/support_agent.py`
+- [x] Prepare 12 evaluation cases across the six categories; exclude source questions and known duplicates where applicable. -> `notebooks/08_technical_support_agent.ipynb`
+- [x] Run the qualitative evaluation and document the results. -> `notebooks/08_technical_support_agent.ipynb`
+- [x] Save the reusable agent workflow for the API stage. -> `src/support_agent.py`
+- [ ] Re-run the cases after the latest changes and review each response against its expected behavior and sources.
+
+### Expected Outcomes
+- An agent that uses the existing classifier, retriever and Ubuntu documentation.
+- Source-linked recommendations or a clear request for engineer review.
+- A small evaluation and reusable workflow for the API stage.
+
+### Outcomes
+- The latest 12-case run completed without notebook errors; the Ubuntu documentation index contained 12 pages and 304 chunks.
+- Ten cases abstained. S1 (APT) and H1 (Steam/NVIDIA) returned drafts, but neither met its expected behavior or passed technical review. Both were marked for human review while still showing steps.
+- The run also exposed unrelated retrieval results and a missed low-risk Wi-Fi diagnostic. The H1 expected behavior assumes Kubuntu 21.10, which is absent from the loaded Ask Ubuntu question text.
+- Leakage checks for H1, S1 and T1 found no matching source questions or known duplicates in the retrieved results.
+
+### Limitations
+- Twelve cases are a small qualitative review and do not measure performance on company tickets.
+- The documentation set is incomplete, and source links do not by themselves prove that a recommendation is correct. Engineers must review the advice.
 
 ## M6 — Backend & API
-**Status:** Not Started<br>
+**Status:** In Progress<br>
 **Summary:** Integrate components through FastAPI.
+
+### Definition of Done (DoD)
+- FastAPI loads the saved classifier, M4 retriever and current M5 support agent for API use.
+- Health, classification and ticket-analysis endpoints accept validated requests and return consistent responses.
+- A stable API response preserves category, confidence, suggested steps, human-review status, evidence sources, missing information and review reasons.
+- Invalid requests and component failures return clear errors without exposing credentials.
+- Local endpoint examples cover classification, a support-agent response, a review-required response and an invalid request.
+
+### Tasks
+- [ ] Define request and response schemas for health, classification and ticket analysis.
+- [ ] Build a FastAPI app that loads the existing components once and exposes the planned endpoints.
+- [ ] Add an adapter between the API and the M5 agent so internal agent changes do not require changes to the API response contract.
+- [ ] Preserve the agent's steps, sources and human-review status in the API response; treat recommendations as experimental while M5 remains In Progress.
+- [ ] Validate inputs and handle model, retrieval, LLM and API failures with clear error responses.
+- [ ] Run local requests for classification, a support-agent response, a review-required case and an invalid request; check response fields and source links.
+
+### Expected Outcomes
+- A local FastAPI backend connecting the saved classifier, retriever and current support-agent workflow.
+- Consistent API responses that preserve evidence and human-review information.
+- Example requests and results ready for the M7 interface. M5 can continue improving recommendation quality behind the adapter without reopening M6, provided the API contract stays stable.
 
 ## M7 — Streamlit Application
 **Status:** Not Started<br>

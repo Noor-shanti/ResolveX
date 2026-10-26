@@ -7,3 +7,8 @@ numpy>=1.26
 scipy>=1.11
 sentence-transformers>=3.0
 faiss-cpu>=1.8
+
+langchain-google-genai>=4.3.7,<5
+langchain-core>=1.6.3,<2
+pydantic>=2.13,<3
+python-dotenv>=1.0,<2
