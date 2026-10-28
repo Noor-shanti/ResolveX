@@ -24,32 +24,29 @@ The IT Support Engineer remains responsible for the final decision.
 ```text
 Employee submits Ticket
         ↓
-Technical Issue Classification + Confidence
+Ticket appears in the Support Team Inbox
         ↓
-IT Support Engineer Reviews
+IT Support Engineer requests Technical Analysis
         ↓
-Technical Support Agent
+Issue Classification + Confidence
         ↓
 Similar Cases + Knowledge Retrieval
         ↓
-Grounded Recommendation + Sources
+Grounded Recommendation (when evidence supports one) + Sources + Review Signals
         ↓
-Engineer Reviews
+IT Support Engineer reviews, resolves or escalates
         ↓
-Resolve or Escalate
+Employee checks request status
 ```
 
 ## Current Status
 
-**Current focus: M5 - Technical Support Agent - In Progress**
+**Current focus: Complete M5 - Technical Support Agent**
 
-The classifier and retrieval prototype are available. MiniLM + FAISS was selected after comparing BM25, dense and hybrid search on a shared sample. Evaluation on 44 held-out queries over 5,000 candidate cases achieved Recall@10 **0.8864** and MRR@10 **0.7188**. Results and limitations are documented in `notebooks/07_retrieval_preparation.ipynb`.
-
-M5 - Technical Support Agent remains **In Progress**. Its latest 12-case evaluation found response and evidence issues that still need review. Agent recommendations remain experimental; findings are documented in `notebooks/08_technical_support_agent.ipynb`.
-
-M6 - Backend & API is **Completed**. FastAPI exposes the existing classifier, retriever and support-agent workflow while preserving source links and human-review information. M5 evaluation continues separately; completing the API does not validate recommendation quality.
-
-Next: **M7 - Streamlit Application**.
+- **M1–M4 — Completed**
+- **M5 — In Progress:** Re-run the 12 evaluation cases and verify at least one useful recommendation against its sources and Ubuntu release.
+- **M6 — Completed**
+- **M7 — Completed**
 
 ## Run the Backend Locally
 
@@ -62,30 +59,40 @@ uvicorn src.api:app --host 127.0.0.1 --port 8000
 
 Open `http://127.0.0.1:8000/docs` for the interactive API reference. The service expects the saved classifier, retrieval and Ubuntu documentation artifacts under `data/processed/`. Set `GEMINI_API_KEY` in the local `.env` file to enable ticket analysis; classification remains available without it.
 
-The API provides `GET /health/live`, `GET /health/ready`, `POST /api/v1/classify` and `POST /api/v1/analyze`.
+The API supports health checks, classification, ticket analysis and ticket management. Tickets and their analysis are stored in `data/processed/support_tickets.sqlite3`; requesters use a private tracking code to check status.
+
+## Run the Streamlit Interface
+
+With the API running as described above, start the interface from the repository root in a second terminal:
+
+```bash
+streamlit run app.py
+```
+
+The interface connects to `http://127.0.0.1:8000` by default. Requesters can submit tickets and check their status; the support team can review the analysis and update each ticket. The support-team inbox has no sign-in, so keep this prototype local and do not use it with real employee data.
 
 ## Architecture
 
 ```text
-Streamlit
-    ↓
-FastAPI
-    ↓
-Technical Support Agent
-    ├── Ticket Classification
-    ├── Similar-Issue Search
-    └── Knowledge Retrieval
-              ↓
-      Ask Ubuntu Knowledge Base
-              ↓
-             LLM
-              ↓
-Grounded Recommendation + Sources
-              ↓
-      IT Support Engineer
+Streamlit requester and support-team pages
+                    ↓
+                  FastAPI ───── SQLite ticket store
+                    ↓
+        Technical Support Agent
+        ├── Ticket Classification
+        ├── Similar-case retrieval
+        └── Knowledge retrieval
+             ├── Ask Ubuntu
+             └── Official Ubuntu documentation
+                    ↓
+                  LLM
+                    ↓
+          Grounded Recommendation (when evidence supports one) + Sources + Review Signals
+                    ↓
+          IT Support Engineer review
 ```
 
-The initial design uses one primary Technical Support Agent that coordinates specialized system capabilities rather than treating every component as a separate agent.
+The initial design uses one primary Technical Support Agent that coordinates specialized system capabilities rather than treating every component as a separate agent. Recommendations are for engineer review; citations do not by themselves establish technical correctness.
 
 ## Repository Structure
 
@@ -95,6 +102,8 @@ ResolveX/
 ├── data/          # Raw, intermediate, and processed data
 ├── notebooks/     # Data analysis and experimentation
 ├── src/           # Reusable application and AI/ML source code
+├── tests/         # API and interface-client tests
+├── app.py         # Streamlit interface
 ├── README.md
 ├── requirements.txt
 └── .gitignore
@@ -105,6 +114,8 @@ The repository structure will evolve as new product components are implemented.
 ## Data
 
 The prototype uses the **Ask Ubuntu Stack Exchange Data Dump** as its primary technical data source.
+
+The retrieval agent also uses a separate, limited collection of official Ubuntu documentation. These sources are labeled separately from community answers.
 
 The dataset is used to support:
 
@@ -136,8 +147,10 @@ ResolveX is being developed using:
 - **Machine Learning (scikit-learn)** — technical issue classification and confidence scoring
 - **RAG (Retrieval-Augmented Generation)** — retrieval of relevant technical knowledge for grounded troubleshooting
 - **LLM** — generation of troubleshooting recommendations using retrieved evidence
+- **LangChain** — support-agent workflow orchestration
 - **FastAPI** — backend APIs and system integration
 - **Streamlit** — application interface
+- **SQLite** — local ticket storage
 - **Langfuse** — AI observability and evaluation
 
 

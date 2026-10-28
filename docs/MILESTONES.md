@@ -194,8 +194,34 @@
 - Local artifact smoke checks and four API tests passed. No live Gemini generation was used for verification.
 
 ## M7 — Streamlit Application
-**Status:** Not Started<br>
+**Status:** Completed<br>
 **Summary:** Build the end-to-end product interface.
+
+### Definition of Done (DoD)
+- Requesters can submit and track tickets; IT Support Engineers can review the queue, inspect analysis and update ticket status.
+- Ticket data persists through the API, and requester status lookup requires a private tracking code.
+- Analysis presents category, confidence, suggested steps, sources and review signals, distinguishing official Ubuntu documentation from Ask Ubuntu answers.
+- Recommendation, review, unsupported and API-error states display clearly, with the engineer responsible for decisions.
+- The local prototype's visual workflow and authentication limitation are documented.
+
+### Tasks
+- [x] Define the requester and IT Support Engineer workflow in one Streamlit app.
+- [x] Implement persistent ticket submission, private status tracking, support queue, analysis and status updates. -> `src/api.py`, `src/ticket_store.py`, `app.py`
+- [x] Present analysis steps, sources, release scope and review signals; distinguish official Ubuntu documentation from community answers. -> `app.py`
+- [x] Test ticket privacy, persistence, status transitions, analysis states and API errors. -> `tests/test_api.py`, `tests/test_ui_client.py`
+- [x] Run the requester and support-team pages and verify recommendation, review, unsupported and API-error displays.
+- [x] Document local setup and the prototype's limitations. -> `README.md`
+
+### Outcomes
+- The Streamlit app supports ticket submission and private tracking for requesters, and queue review, analysis and status updates for the support team. -> `app.py`
+- FastAPI and SQLite persist tickets and analysis; the requester uses one private tracking code. -> `src/api.py`, `src/ticket_store.py`
+- All 16 API and API-client tests passed. The three pages and sample recommendation, review, unsupported and API-error displays rendered without app exceptions. -> `tests/test_api.py`, `tests/test_ui_client.py`
+- M7 is complete; M5 remains in progress because the interface checks do not establish the technical correctness of recommendations.
+
+### Limitations
+- M5 recommendations still require technical validation; the interface does not establish their correctness.
+- Requester tracking is read-only. “Specialist review needed” records a status and does not automatically route the ticket.
+- The local support-team workspace has no authentication and is not ready for shared or production use.
 
 ## M8 — AI Evaluation
 **Status:** Not Started<br>

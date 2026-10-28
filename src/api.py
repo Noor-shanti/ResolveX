@@ -11,12 +11,13 @@ from typing import Any, Callable, Literal
 
 import joblib
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from src.models.classification import predict_ticket
+from src.ticket_store import TicketStore
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -92,6 +93,34 @@ class ReadinessResponse(BaseModel):
     components: dict[str, bool]
 
 
+class TicketCreatedResponse(BaseModel):
+    ticket_id: str
+    title: str
+    tracking_token: str
+    status: str
+    created_at: str
+    updated_at: str
+
+
+class RequesterTicketResponse(BaseModel):
+    ticket_id: str
+    title: str
+    status: str
+    status_note: str
+    created_at: str
+    updated_at: str
+
+
+class TicketStatusUpdate(BaseModel):
+    status: Literal["received", "in_review", "resolved", "escalated"]
+    status_note: str = Field(default="", max_length=2000)
+
+
+class EngineerTicketResponse(RequesterTicketResponse):
+    description: str
+    analysis: AnalysisResponse | None = None
+
+
 def _load_api_services(root: Path) -> ApiServices:
     """Load local artifacts once. API startup never downloads or rebuilds indexes."""
     load_dotenv(root / ".env")
@@ -158,9 +187,12 @@ def create_app(
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        app.state.services = services_loader(Path(root).resolve())
+        resolved_root = Path(root).resolve()
+        app.state.services = services_loader(resolved_root)
+        app.state.ticket_store = TicketStore(resolved_root / "data/processed/support_tickets.sqlite3")
         yield
         app.state.services = None
+        app.state.ticket_store = None
 
     app = FastAPI(
         title="ResolveX API",
@@ -228,6 +260,59 @@ def create_app(
         except Exception as exc:
             logger.error("Ticket analysis failed (%s)", type(exc).__name__)
             _error(503, "analysis_unavailable", "Ticket analysis is temporarily unavailable.")
+
+    @app.post("/api/v1/tickets", response_model=TicketCreatedResponse, status_code=201, tags=["tickets"])
+    def submit_ticket(payload: TicketRequest, request: Request):
+        record, token = request.app.state.ticket_store.create(payload.title, payload.description)
+        return {**record, "tracking_token": token}
+
+    @app.get("/api/v1/requester/status", response_model=RequesterTicketResponse, tags=["tickets"])
+    def requester_ticket_status(
+        request: Request,
+        tracking_token: str | None = Header(default=None, alias="X-Ticket-Token"),
+    ):
+        if not tracking_token:
+            _error(401, "ticket_token_required", "A ticket tracking credential is required.")
+        record = request.app.state.ticket_store.get_for_requester(tracking_token)
+        if record is None:
+            _error(404, "ticket_not_found", "Ticket not found or tracking code is invalid.")
+        return record
+
+    @app.get("/api/v1/engineer/tickets", response_model=list[EngineerTicketResponse], tags=["tickets"])
+    def engineer_ticket_queue(request: Request):
+        return request.app.state.ticket_store.list_for_engineer()
+
+    @app.post("/api/v1/engineer/tickets/{ticket_id}/analyze", response_model=EngineerTicketResponse, tags=["tickets"])
+    def analyze_queued_ticket(ticket_id: str, request: Request):
+        services: ApiServices = request.app.state.services
+        if services.agent is None:
+            _error(503, "analysis_unavailable", "Ticket analysis is not configured; check the server's model credentials and readiness.")
+        ticket = request.app.state.ticket_store.get_for_engineer(ticket_id)
+        if ticket is None:
+            _error(404, "ticket_not_found", "Ticket was not found.")
+        try:
+            result = _adapt_agent_response(services.agent.run(ticket["title"], ticket["description"]))
+        except ValueError as exc:
+            _error(422, "invalid_ticket", str(exc))
+        except Exception as exc:
+            logger.error("Ticket analysis failed (%s)", type(exc).__name__)
+            _error(503, "analysis_unavailable", "Ticket analysis is temporarily unavailable.")
+        updated = request.app.state.ticket_store.save_analysis(ticket_id, result.model_dump())
+        return updated
+
+    @app.patch("/api/v1/engineer/tickets/{ticket_id}/status", response_model=EngineerTicketResponse, tags=["tickets"])
+    def update_ticket_status(
+        ticket_id: str,
+        payload: TicketStatusUpdate,
+        request: Request,
+    ):
+        try:
+            updated = request.app.state.ticket_store.update_status(ticket_id, payload.status, payload.status_note)
+        except ValueError as exc:
+            _error(409, "invalid_status_transition", str(exc))
+        if updated is None:
+            _error(404, "ticket_not_found", "Ticket was not found.")
+        return updated
 
     return app
 
