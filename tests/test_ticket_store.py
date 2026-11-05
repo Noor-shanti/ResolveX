@@ -53,5 +53,43 @@ class TicketStoreMigrationTests(unittest.TestCase):
         self.assertEqual(new_ticket["ubuntu_release"], "24.04")
 
 
+class TicketAgentConversationStoreTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.store = TicketStore(Path(self.temp_dir.name) / "tickets.sqlite3")
+        self.ticket, _ = self.store.create("APT issue", "The package upgrade failed.")
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_persists_ordered_engineer_and_agent_messages_with_agent_analysis(self):
+        question = self.store.add_agent_message(
+            self.ticket["ticket_id"], "engineer", "What evidence supports this?"
+        )
+        analysis = {
+            "answer": "The official manual describes apt-get behavior.",
+            "answer_citations": [{"source_id": "OD-1", "quote": "apt-get"}],
+        }
+        reply = self.store.add_agent_message(
+            self.ticket["ticket_id"], "agent", analysis["answer"], analysis
+        )
+
+        messages = self.store.get_agent_conversation(self.ticket["ticket_id"])
+
+        self.assertEqual([message["role"] for message in messages], ["engineer", "agent"])
+        self.assertEqual(messages[0]["content"], question["content"])
+        self.assertEqual(messages[1]["analysis"], analysis)
+        self.assertEqual(reply["ticket_id"], self.ticket["ticket_id"])
+
+    def test_rejects_empty_or_unsupported_messages_and_missing_tickets(self):
+        with self.assertRaises(ValueError):
+            self.store.add_agent_message(self.ticket["ticket_id"], "requester", "Hi")
+        with self.assertRaises(ValueError):
+            self.store.add_agent_message(self.ticket["ticket_id"], "engineer", "  ")
+        with self.assertRaises(KeyError):
+            self.store.add_agent_message("RX-MISSING", "engineer", "Question")
+        self.assertIsNone(self.store.get_agent_conversation("RX-MISSING"))
+
+
 if __name__ == "__main__":
     unittest.main()

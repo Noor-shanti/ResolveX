@@ -19,6 +19,7 @@ class _ClassifierPipeline:
 class _Agent:
     def __init__(self):
         self.calls = []
+        self.engineer_calls = []
 
     def run(self, title, body, **context):
         self.calls.append((title, body, context))
@@ -71,6 +72,17 @@ class _Agent:
             },
             "withheld_steps": [],
         }
+
+    def answer_engineer_question(
+        self, title, body, question, conversation_history=None, **context
+    ):
+        self.engineer_calls.append((title, body, question, conversation_history, context))
+        return self.run(title, body, **context)
+
+
+class _FailingEngineerQuestionAgent(_Agent):
+    def answer_engineer_question(self, *args, **kwargs):
+        raise RuntimeError("provider unavailable; do not expose internal details")
 
 
 def _services(agent=True, agent_instance=None):
@@ -275,6 +287,79 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(agent.calls[0][2], {
             "product_type": "ubuntu_server", "ubuntu_release": "24.04",
         })
+
+    def test_engineer_can_question_agent_about_ticket_and_reopen_saved_thread(self):
+        agent = _Agent()
+        with _client(agent_instance=agent) as client:
+            created = client.post("/api/v1/tickets", json={
+                "title": "DNS lookup fails", "description": "Ubuntu Server cannot resolve example.com.",
+                "product_type": "ubuntu_server", "ubuntu_release": "24.04",
+            }).json()
+            ticket_id = created["ticket_id"]
+            first = client.post(
+                f"/api/v1/engineer/tickets/{ticket_id}/agent-conversation",
+                json={"question": "Does the cited source say this fixes DNS?"},
+            )
+            second = client.post(
+                f"/api/v1/engineer/tickets/{ticket_id}/agent-conversation",
+                json={"question": "What should I verify before sharing the command?"},
+            )
+            reopened = client.get(f"/api/v1/engineer/tickets/{ticket_id}/agent-conversation")
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(reopened.status_code, 200)
+        self.assertEqual([m["role"] for m in reopened.json()["messages"]], [
+            "engineer", "agent", "engineer", "agent",
+        ])
+        self.assertEqual(reopened.json()["messages"][1]["analysis"]["sources"][0]["source_id"], "OD1")
+        self.assertEqual(agent.engineer_calls[0][:3], (
+            "DNS lookup fails", "Ubuntu Server cannot resolve example.com.",
+            "Does the cited source say this fixes DNS?",
+        ))
+        self.assertEqual(agent.engineer_calls[0][4], {
+            "product_type": "ubuntu_server", "ubuntu_release": "24.04",
+        })
+        self.assertEqual(agent.engineer_calls[1][3], [
+            {"role": "engineer", "content": "Does the cited source say this fixes DNS?"},
+            {"role": "agent", "content": (
+                "Review the evidence before troubleshooting.\n\n"
+                "The resolver query can check whether the hostname resolves."
+            )},
+        ])
+
+    def test_engineer_agent_conversation_rejects_missing_ticket_and_blank_question(self):
+        with _client() as client:
+            missing = client.post(
+                "/api/v1/engineer/tickets/RX-MISSING/agent-conversation",
+                json={"question": "Why?"},
+            )
+            created = client.post("/api/v1/tickets", json={"title": "DNS issue"}).json()
+            blank = client.post(
+                f"/api/v1/engineer/tickets/{created['ticket_id']}/agent-conversation",
+                json={"question": "   "},
+            )
+            empty_thread = client.get(
+                f"/api/v1/engineer/tickets/{created['ticket_id']}/agent-conversation"
+            )
+        self.assertEqual(missing.status_code, 404)
+        self.assertEqual(blank.status_code, 422)
+        self.assertEqual(empty_thread.json()["messages"], [])
+
+    def test_agent_failure_is_saved_as_a_safe_internal_reply(self):
+        with _client(agent_instance=_FailingEngineerQuestionAgent()) as client:
+            created = client.post("/api/v1/tickets", json={"title": "DNS issue"}).json()
+            response = client.post(
+                f"/api/v1/engineer/tickets/{created['ticket_id']}/agent-conversation",
+                json={"question": "What should I check?"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        messages = response.json()["messages"]
+        self.assertEqual([message["role"] for message in messages], ["engineer", "agent"])
+        self.assertIn("temporarily unavailable", messages[-1]["content"])
+        self.assertNotIn("provider unavailable", response.text)
+        self.assertEqual(messages[-1]["analysis"]["status"], "needs_review")
 
     def test_invalid_ticket_status_transition_is_rejected(self):
         with _client() as client:

@@ -1,4 +1,5 @@
 import unittest
+import json
 from unittest.mock import Mock
 
 import numpy as np
@@ -105,6 +106,35 @@ def _agent(draft=None, *, official=None, community=None):
 
 
 class SupportAgentTests(unittest.TestCase):
+    def test_engineer_question_uses_original_ticket_for_classification_and_retrieval(self):
+        agent, chain = _agent()
+        history = [
+            {"role": "engineer", "content": "What does the cited manual say?"},
+            {"role": "agent", "content": "It documents the query syntax."},
+        ]
+
+        result = agent.answer_engineer_question(
+            "DNS lookup fails",
+            "Ubuntu Server 24.04 cannot resolve example.com.",
+            "Does the source say this fixes DNS?",
+            history,
+            product_type="ubuntu_server",
+            ubuntu_release="24.04",
+        )
+
+        self.assertEqual(result["status"], "recommendation")
+        context = json.loads(chain.invoke.call_args.args[0]["context"])
+        self.assertEqual(context["ticket"]["body"], "Ubuntu Server 24.04 cannot resolve example.com.")
+        self.assertEqual(context["engineer_question"], "Does the source say this fixes DNS?")
+        self.assertEqual(context["conversation_history"], history)
+        self.assertEqual(agent.retriever.calls[0][1], "Ubuntu Server 24.04 cannot resolve example.com.")
+
+    def test_engineer_question_rejects_empty_question(self):
+        agent, chain = _agent()
+        with self.assertRaises(ValueError):
+            agent.answer_engineer_question("Ticket", "Details", " ")
+        chain.invoke.assert_not_called()
+
     def test_read_only_path_display_is_allowed_but_other_variables_stay_blocked(self):
         self.assertFalse(_unsafe_instruction("Check PATH by running `echo $PATH`."))
         self.assertTrue(_unsafe_instruction("Run `echo $PACKAGE`."))

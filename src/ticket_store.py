@@ -63,6 +63,21 @@ class TicketStore:
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_tickets_tracking_token_hash "
                 "ON tickets (tracking_token_hash)"
             )
+            connection.execute("""
+                CREATE TABLE IF NOT EXISTS ticket_agent_messages (
+                    message_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ticket_id TEXT NOT NULL,
+                    role TEXT NOT NULL CHECK (role IN ('engineer', 'agent')),
+                    content TEXT NOT NULL,
+                    analysis_json TEXT,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (ticket_id) REFERENCES tickets(ticket_id)
+                )
+            """)
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ticket_agent_messages_thread "
+                "ON ticket_agent_messages (ticket_id, message_id)"
+            )
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.database_path, timeout=10)
@@ -157,6 +172,74 @@ class TicketStore:
                 (json.dumps(analysis, ensure_ascii=False), now, ticket_id.strip().upper()),
             )
         return self.get_for_engineer(ticket_id) if cursor.rowcount else None
+
+    def add_agent_message(
+        self,
+        ticket_id: str,
+        role: str,
+        content: str,
+        analysis: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Persist an engineer question or agent reply in the ticket's internal thread."""
+        normalized_ticket_id = ticket_id.strip().upper()
+        normalized_content = content.strip()
+        if role not in {"engineer", "agent"}:
+            raise ValueError(f"Unsupported ticket-agent message role: {role}")
+        if not normalized_content:
+            raise ValueError("Conversation message cannot be empty")
+        now = _now()
+        with self._connection() as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM tickets WHERE ticket_id = ?", (normalized_ticket_id,)
+            ).fetchone()
+            if exists is None:
+                raise KeyError(f"Ticket not found: {normalized_ticket_id}")
+            cursor = connection.execute(
+                "INSERT INTO ticket_agent_messages "
+                "(ticket_id, role, content, analysis_json, created_at) VALUES (?, ?, ?, ?, ?)",
+                (
+                    normalized_ticket_id,
+                    role,
+                    normalized_content,
+                    json.dumps(analysis, ensure_ascii=False) if analysis is not None else None,
+                    now,
+                ),
+            )
+            connection.execute(
+                "UPDATE tickets SET updated_at = ? WHERE ticket_id = ?",
+                (now, normalized_ticket_id),
+            )
+            message_id = cursor.lastrowid
+        return {
+            "message_id": message_id,
+            "ticket_id": normalized_ticket_id,
+            "role": role,
+            "content": normalized_content,
+            "analysis": analysis,
+            "created_at": now,
+        }
+
+    def get_agent_conversation(self, ticket_id: str) -> list[dict[str, Any]] | None:
+        """Return the internal engineer-agent thread, or None when its ticket is absent."""
+        normalized_ticket_id = ticket_id.strip().upper()
+        with self._connection() as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM tickets WHERE ticket_id = ?", (normalized_ticket_id,)
+            ).fetchone()
+            if exists is None:
+                return None
+            rows = connection.execute(
+                "SELECT * FROM ticket_agent_messages WHERE ticket_id = ? ORDER BY message_id",
+                (normalized_ticket_id,),
+            ).fetchall()
+        return [{
+            "message_id": row["message_id"],
+            "ticket_id": row["ticket_id"],
+            "role": row["role"],
+            "content": row["content"],
+            "analysis": json.loads(row["analysis_json"]) if row["analysis_json"] else None,
+            "created_at": row["created_at"],
+        } for row in rows]
 
     def update_status(self, ticket_id: str, status: str, status_note: str = "") -> dict[str, Any] | None:
         if status not in TICKET_STATUSES:

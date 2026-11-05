@@ -112,6 +112,39 @@ def analyze_engineer_ticket(api_base: str, ticket_id: str, *, session: Any = req
     return payload
 
 
+def get_engineer_agent_conversation(
+    api_base: str, ticket_id: str, *, session: Any = requests
+) -> dict[str, Any]:
+    payload = _request(
+        api_base,
+        "GET",
+        f"/api/v1/engineer/tickets/{ticket_id}/agent-conversation",
+        session=session,
+    )
+    if not isinstance(payload, dict) or not isinstance(payload.get("messages"), list):
+        raise ApiRequestError("The service returned an invalid agent conversation.")
+    return payload
+
+
+def ask_engineer_agent(
+    api_base: str,
+    ticket_id: str,
+    question: str,
+    *,
+    session: Any = requests,
+) -> dict[str, Any]:
+    payload = _request(
+        api_base,
+        "POST",
+        f"/api/v1/engineer/tickets/{ticket_id}/agent-conversation",
+        json={"question": question},
+        session=session,
+    )
+    if not isinstance(payload, dict) or not isinstance(payload.get("messages"), list):
+        raise ApiRequestError("The service returned an invalid agent conversation.")
+    return payload
+
+
 def update_engineer_ticket(
     api_base: str,
     ticket_id: str,

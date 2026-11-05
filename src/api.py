@@ -160,6 +160,34 @@ class EngineerTicketResponse(RequesterTicketResponse):
     analysis: AnalysisResponse | None = None
 
 
+class EngineerAgentQuestion(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    question: str = Field(min_length=1, max_length=4000)
+
+    @field_validator("question")
+    @classmethod
+    def normalize_question(cls, value):
+        value = value.strip()
+        if not value:
+            raise ValueError("Enter a question for the support agent")
+        return value
+
+
+class EngineerAgentMessageResponse(BaseModel):
+    message_id: int
+    ticket_id: str
+    role: Literal["engineer", "agent"]
+    content: str
+    analysis: AnalysisResponse | None = None
+    created_at: str
+
+
+class EngineerAgentConversationResponse(BaseModel):
+    ticket_id: str
+    messages: list[EngineerAgentMessageResponse]
+
+
 def _load_api_services(root: Path) -> ApiServices:
     """Load local artifacts once. API startup never downloads or rebuilds indexes."""
     load_dotenv(root / ".env")
@@ -370,6 +398,82 @@ def create_app(
             _error(503, "analysis_unavailable", "Ticket analysis is temporarily unavailable.")
         updated = request.app.state.ticket_store.save_analysis(ticket_id, result.model_dump())
         return updated
+
+    @app.get(
+        "/api/v1/engineer/tickets/{ticket_id}/agent-conversation",
+        response_model=EngineerAgentConversationResponse,
+        tags=["conversations"],
+    )
+    def engineer_agent_conversation(ticket_id: str, request: Request):
+        messages = request.app.state.ticket_store.get_agent_conversation(ticket_id)
+        if messages is None:
+            _error(404, "ticket_not_found", "Ticket was not found.")
+        return {"ticket_id": ticket_id.strip().upper(), "messages": messages}
+
+    @app.post(
+        "/api/v1/engineer/tickets/{ticket_id}/agent-conversation",
+        response_model=EngineerAgentConversationResponse,
+        tags=["conversations"],
+    )
+    def ask_ticket_agent(
+        ticket_id: str,
+        payload: EngineerAgentQuestion,
+        request: Request,
+    ):
+        services: ApiServices = request.app.state.services
+        if services.agent is None:
+            _error(503, "analysis_unavailable", "Ticket analysis is not configured; check the server's model credentials and readiness.")
+        store: TicketStore = request.app.state.ticket_store
+        ticket = store.get_for_engineer(ticket_id)
+        if ticket is None:
+            _error(404, "ticket_not_found", "Ticket was not found.")
+        history = store.get_agent_conversation(ticket_id) or []
+        store.add_agent_message(ticket_id, "engineer", payload.question)
+        prior_turns = []
+        remaining_context_chars = 8000
+        for message in reversed(history[-8:]):
+            if remaining_context_chars <= 0:
+                break
+            content = message["content"][:remaining_context_chars]
+            prior_turns.append({"role": message["role"], "content": content})
+            remaining_context_chars -= len(content)
+        prior_turns.reverse()
+        try:
+            raw = services.agent.answer_engineer_question(
+                ticket["title"],
+                ticket["description"],
+                payload.question,
+                prior_turns,
+                product_type=ticket.get("product_type"),
+                ubuntu_release=ticket.get("ubuntu_release"),
+            )
+            result = _adapt_agent_response(raw)
+        except ValueError as exc:
+            _error(422, "invalid_question", str(exc))
+        except Exception as exc:
+            logger.error("Engineer-agent turn failed (%s)", type(exc).__name__)
+            result = AnalysisResponse(
+                status="needs_review",
+                summary="The support agent is temporarily unavailable. The engineer question was saved.",
+                steps=[],
+                sources=[],
+                missing_information=[],
+                review_reasons=["Agent generation failed; retry the question after checking model availability."],
+                error="Agent generation failed",
+                human_review=True,
+            )
+        content_parts = [result.summary]
+        if result.answer:
+            content_parts.append(result.answer)
+        if result.error:
+            content_parts.append("The agent could not complete this response; review the error details.")
+        store.add_agent_message(
+            ticket_id, "agent", "\n\n".join(part for part in content_parts if part), result.model_dump()
+        )
+        return {
+            "ticket_id": ticket_id.strip().upper(),
+            "messages": store.get_agent_conversation(ticket_id),
+        }
 
     @app.patch("/api/v1/engineer/tickets/{ticket_id}/status", response_model=EngineerTicketResponse, tags=["tickets"])
     def update_ticket_status(

@@ -34,7 +34,11 @@ Similar Cases + Knowledge Retrieval
         ↓
 Grounded Recommendation (when evidence supports one) + Sources + Review Signals
         ↓
-IT Support Engineer reviews, resolves or escalates
+IT Support Engineer reviews the result
+        ↓
+Engineer can ask the agent follow-up questions in the ticket's internal thread
+        ↓
+IT Support Engineer decides whether to resolve or escalate
         ↓
 Employee checks request status
 ```
@@ -45,7 +49,9 @@ Employee checks request status
 - **M5 — Completed:** Evidence-grounded technical guidance with cited sources, safety checks, and engineer review.
 - **M6 — Completed:** FastAPI backend with ticket ingestion, analysis adapter, and sqlite persistence.
 - **M7 — Completed:** Streamlit end-to-end interactive interface for Requesters and IT Support Engineers.
+- **M8 Completed:** Internal, per-ticket conversation between IT Support Engineers and the agent, with ticket context, saved history, and evidence-linked replies.
 
+- **Next: M9 Evaluation & Refinement.**
 
 ## Run the Backend Locally
 
@@ -58,7 +64,7 @@ uvicorn src.api:app --host 127.0.0.1 --port 8000
 
 Open `http://127.0.0.1:8000/docs` for the interactive API reference. The service expects the saved classifier, retrieval and Ubuntu documentation artifacts under `data/processed/`. Set `GEMINI_API_KEY` in the local `.env` file to enable ticket analysis; classification remains available without it.
 
-The API supports health checks, classification, ticket analysis and ticket management. Tickets and their analysis are stored in `data/processed/support_tickets.sqlite3`; requesters use a private tracking code to check status.
+The API supports health checks, classification, ticket analysis, ticket management, and an engineer-only ticket-agent conversation. Tickets, analysis, and internal conversation history are stored in `data/processed/support_tickets.sqlite3`; requesters use a private tracking code to check ticket status. The engineer endpoints have no sign-in in this local prototype.
 
 ## Run the Streamlit Interface
 
@@ -68,7 +74,7 @@ With the API running as described above, start the interface from the repository
 streamlit run app.py
 ```
 
-The interface connects to `http://127.0.0.1:8000` by default. Requesters can submit tickets and check their status; the support team can review the analysis and update each ticket. The support-team inbox has no sign-in, so keep this prototype local and do not use it with real employee data.
+The interface connects to `http://127.0.0.1:8000` by default. Requesters can submit tickets and check their status. The support team can review the analysis, ask the agent follow-up questions inside a ticket, and update its status. This internal conversation is not visible to the requester. The support-team inbox has no sign-in, so keep this prototype local and do not use it with real employee data.
 
 ## Architecture
 
@@ -88,7 +94,7 @@ Streamlit requester and support-team pages
                     ↓
           Grounded Recommendation (when evidence supports one) + Sources + Review Signals
                     ↓
-          IT Support Engineer review
+          IT Support Engineer review and ticket-scoped follow-up chat with the agent
 ```
 
 The initial design uses one primary Technical Support Agent that coordinates specialized system capabilities rather than treating every component as a separate agent. Recommendations are for engineer review; citations do not by themselves establish technical correctness.

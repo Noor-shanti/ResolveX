@@ -7,8 +7,10 @@ import requests
 
 from src.ui_client import (
     ApiRequestError,
+    ask_engineer_agent,
     analyze_ticket,
     create_ticket,
+    get_engineer_agent_conversation,
     get_engineer_queue,
     get_requester_ticket,
     update_engineer_ticket,
@@ -16,6 +18,35 @@ from src.ui_client import (
 
 
 class UiAnalysisRenderingTests(unittest.TestCase):
+    def test_engineer_agent_thread_renders_internal_speakers_and_linked_sources(self):
+        streamlit = MagicMock()
+        with patch.dict(sys.modules, {"streamlit": streamlit}):
+            import app as app_module
+
+        message = {
+            "role": "agent",
+            "content": "The source documents the query syntax.",
+            "analysis": {
+                "status": "needs_review",
+                "answer_citations": [{"source_id": "OD1", "quote": "query HOSTNAME"}],
+                "steps": [],
+                "sources": [{
+                    "source_id": "OD1",
+                    "title": "Ubuntu 24.04 resolvectl manpage",
+                    "url": "https://manpages.ubuntu.com/resolvectl",
+                }],
+                "review_reasons": ["Verify release scope."],
+            },
+        }
+        with patch.object(app_module, "st", streamlit):
+            app_module._render_agent_message(message)
+
+        streamlit.chat_message.assert_called_once_with("assistant")
+        self.assertIn("ResolveX agent", [call.args[0] for call in streamlit.caption.call_args_list])
+        self.assertTrue(any("Ubuntu 24.04 resolvectl manpage" in call.args[0]
+                            for call in streamlit.markdown.call_args_list))
+        self.assertTrue(any("query HOSTNAME" in str(call.args) for call in streamlit.caption.call_args_list))
+
     def test_render_result_displays_informational_answer_and_its_citation(self):
         streamlit = MagicMock()
         with patch.dict(sys.modules, {"streamlit": streamlit}):
@@ -61,12 +92,60 @@ class UiAnalysisRenderingTests(unittest.TestCase):
         streamlit.code.assert_called_once_with("resolvectl query www.google.com", language="bash")
         self.assertTrue(any("query HOSTNAME resolves domain names" in item for item in rendered))
         self.assertTrue(any("Draft answer" in item for item in rendered))
-        self.assertTrue(any("Answer validation:" in item for item in rendered))
-        self.assertTrue(any("Safety decision:" in item for item in rendered))
-        streamlit.expander.assert_called_with("Validation and safety details")
+        self.assertFalse(any("Answer validation:" in item for item in rendered))
+        self.assertFalse(any("Step validation:" in item for item in rendered))
+        self.assertFalse(any("Safety decision:" in item for item in rendered))
+
+    def test_agent_generation_error_shows_friendly_unavailable_message(self):
+        streamlit = MagicMock()
+        with patch.dict(sys.modules, {"streamlit": streamlit}):
+            import app as app_module
+
+        message = {
+            "role": "agent",
+            "content": "The recommendation could not be validated; no steps are provided.",
+            "analysis": {
+                "error": "GoogleAPIError: 503 UNAVAILABLE with provider details",
+                "review_reasons": ["Generation failed: GoogleAPIError: 503 UNAVAILABLE"],
+            },
+        }
+        with patch.object(app_module, "st", streamlit):
+            app_module._render_agent_message(message)
+
+        streamlit.warning.assert_called_once_with(
+            "The AI service is temporarily unavailable. Please try again in a little while."
+        )
+        streamlit.write.assert_not_called()
+        streamlit.expander.assert_not_called()
 
 
 class UiApiClientTests(unittest.TestCase):
+    def test_engineer_agent_conversation_reads_and_posts_ticket_scoped_questions(self):
+        session = Mock()
+        thread = {"ticket_id": "RX-123", "messages": []}
+        session.request.side_effect = [
+            SimpleNamespace(ok=True, status_code=200, json=lambda: thread),
+            SimpleNamespace(ok=True, status_code=200, json=lambda: thread),
+        ]
+
+        self.assertEqual(
+            get_engineer_agent_conversation("http://localhost:8000", "RX-123", session=session),
+            thread,
+        )
+        self.assertEqual(
+            ask_engineer_agent(
+                "http://localhost:8000", "RX-123", "Explain the evidence", session=session
+            ),
+            thread,
+        )
+
+        self.assertEqual(session.request.call_args_list[0].args[:2], (
+            "GET", "http://localhost:8000/api/v1/engineer/tickets/RX-123/agent-conversation",
+        ))
+        self.assertEqual(session.request.call_args_list[1].kwargs["json"], {
+            "question": "Explain the evidence",
+        })
+
     def test_posts_ticket_to_analysis_endpoint(self):
         session = Mock()
         session.request.return_value = SimpleNamespace(

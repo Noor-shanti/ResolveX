@@ -228,36 +228,44 @@
 - The local support-team workspace has no authentication and is not ready for shared or production use.
 
 ## M8 — Conversational IT Support
-**Status:** Not Started<br>
-**Summary:** Let users chat with the ResolveX support agent and continue the same conversation with IT Support when a human review is needed.
+**Status:** Completed<br>
+**Summary:** Give IT Support Engineers an internal conversation with the ResolveX agent while they review a submitted ticket.
 
 ### Definition of Done (DoD)
-- A clear chat entry point opens a responsive conversation view where a requester can exchange messages with the AI support agent.
-- The conversation and its context are saved and linked to a support ticket.
-- The agent uses the existing M5 classification, retrieval, and safety workflow; it asks for missing details and presents source-linked guidance without executing commands.
-- When human review is needed, IT Support can read the conversation, reply in the same thread, and make that reply visible to the requester.
-- The local prototype's access limits and any unavailable service are clear; it is not presented as a production-ready public chat.
+- A requester submits a support ticket through the existing ticket form; the requester does not chat with the agent.
+- In the ticket review page, an IT Support Engineer can ask the agent questions about that ticket and receive evidence-linked responses using the existing M5 analysis workflow.
+- Each ticket has a saved conversation history between the engineer and the agent, and later questions retain the ticket context.
+- The agent does not execute commands; the engineer remains responsible for deciding whether to use its suggestions.
+- The local prototype's access limits and any unavailable service are clear; it is not presented as a production-ready shared support system.
 
 ### Tasks
-- [ ] Define how a requester starts a chat and how the conversation becomes an IT Support handoff.
-- [ ] Add API and storage support for conversation messages linked to a ticket.
-- [ ] Build the requester chat interface and connect AI replies to the existing M5 workflow.
-- [ ] Let IT Support read and reply to handed-off conversations in the same thread.
-- [ ] Verify message history, ticket linkage, requester access, and error handling.
+- [x] Define the engineer-to-agent turn format and how ticket details and prior turns provide context.
+- [x] Add per-ticket persistence and API support for engineer questions and agent replies.
+- [x] Add the chat panel to the existing IT Support ticket review page and connect it to the M5 agent.
+- [x] Display evidence and failures clearly; keep agent suggestions separate from engineer decisions.
+- [x] Verify ticket context, conversation history, and error handling with automated tests.
+- [x] Walk through the engineer conversation in the local application.
+
+### Outcomes
+- IT Support Engineers can ask ticket-scoped follow-up questions in the ticket review page; the agent uses the ticket context, M5 evidence, and recent conversation turns.
+- Conversation turns are stored per ticket and returned through the API, so the engineer can continue the thread.
+- In the local walkthrough, the engineer asked whether `resolvectl query www.google.com` was a safe check, what its result would show, and requested evidence. The agent explained the DNS lookup, cited the Ubuntu 22.04 resolvectl manpage, and returned the read-only command; the implemented answer, step, and safety checks passed.
+- Suggestions remain for engineer review; the agent does not execute commands.
+
 
 ## M9 — Evaluation & Refinement
 **Status:** Not Started<br>
-**Summary:** Evaluate the integrated support chat and agent on representative cases, then fix important failures.
+**Summary:** Evaluate ticket analysis and the engineer-to-agent workflow on representative support cases, then fix important failures.
 
 ### Definition of Done (DoD)
-- A small, documented set of held-out and synthetic conversations covers normal support, missing details, unsafe actions, unsupported requests, and human handoff.
+- A small, documented set of held-out tickets and synthetic engineer questions covers normal support, missing details, unsafe actions, and unsupported requests.
 - Results distinguish successful model responses from provider or parsing failures that prevented evaluation.
 - Citation, scope, command-safety, and escalation behavior is reviewed, and high-impact defects are addressed.
 - The evaluation records limitations and does not treat synthetic cases as test-set evidence.
 
 ### Tasks
 - [ ] Define expected outcomes for representative conversations before running them.
-- [ ] Evaluate whether the agent asks useful follow-up questions, gives evidence-linked answers, and hands off appropriately.
+- [ ] Evaluate whether agent replies answer the engineer's question, use relevant evidence, and preserve safety boundaries.
 - [ ] Record model availability failures separately from answer-quality outcomes.
 - [ ] Fix and regression-test high-impact issues found in the evaluation.
 

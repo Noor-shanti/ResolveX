@@ -12,7 +12,9 @@ import streamlit as st
 from src.ui_client import (
     ApiRequestError,
     analyze_engineer_ticket,
+    ask_engineer_agent,
     create_ticket,
+    get_engineer_agent_conversation,
     get_engineer_queue,
     get_requester_ticket,
     update_engineer_ticket,
@@ -64,6 +66,7 @@ h2 { font-size: 1.45rem !important; }
 .metric.confidence-metric { border-top:3px solid #7044c7; }
 .metric.review-needed { border-top:3px solid #b77912; background:#fffaf0; }
 .metric.review-clear { border-top:3px solid #21805a; background:#f4fbf7; }
+.metric.agent-assessment { border-top:3px solid #7044c7; background:#f8f5ff; }
 .metric-label { color:var(--muted); font-size:.78rem; margin-bottom:8px; }
 .metric-value { color:var(--ink); font:700 1.02rem 'Manrope',sans-serif; }
 .support-section-heading { display:flex; align-items:center; gap:11px; padding:3px 0 13px; margin-bottom:10px; border-bottom:1px solid var(--line); }
@@ -111,7 +114,16 @@ h2 { font-size: 1.45rem !important; }
 .stButton > button[kind="primary"]:hover { border:0; background:linear-gradient(110deg,#6135b5,#482584); }
 .stTextInput input, .stTextArea textarea, .stSelectbox div[data-baseweb="select"] { border-radius:11px !important; }
 div[data-testid="stForm"] { border:0; padding:0; }
+div[class*="st-key-floating-agent-launcher"] { position:fixed; right:26px; bottom:24px; z-index:10000; width:72px; }
+div[class*="st-key-floating-agent-launcher"] button { width:70px; height:70px; min-height:70px; border-radius:50%; border:1px solid #d8cbed; background:linear-gradient(145deg,#fff,#f1eaff); color:#6036ae; font-size:2.25rem; box-shadow:0 8px 24px #211a3130; }
+div[class*="st-key-floating-agent-launcher"] button p { font-size:2.25rem !important; line-height:1 !important; margin:0 !important; }
+div[class*="st-key-floating-agent-launcher"] button:hover { border-color:#7044c7; color:#4c2c91; transform:translateY(-2px); }
+div[class*="st-key-floating-agent-panel"] { position:fixed; right:26px; bottom:100px; z-index:9999; width:min(420px,calc(100vw - 32px)); max-height:72vh; overflow:auto; background:#fff; border:1px solid #ded5ee; border-radius:18px; padding:18px; box-shadow:0 16px 48px #211a3133; }
+div[class*="st-key-floating-agent-panel"] > div { background:#fff; }
+.floating-agent-title { font:700 1.05rem 'Manrope',sans-serif; color:var(--ink); margin-bottom:2px; }
+.floating-agent-eyebrow { color:var(--purple); font-size:.66rem; font-weight:800; letter-spacing:.12em; }
 @media (max-width: 760px) { .block-container { padding:1.25rem 1rem 3rem; } .panel { padding:19px; } }
+@media (max-width: 760px) { div[class*="st-key-floating-agent-launcher"] { right:16px; bottom:16px; } div[class*="st-key-floating-agent-panel"] { right:12px; bottom:88px; width:calc(100vw - 24px); max-height:72vh; } }
 </style>
 """
 
@@ -139,7 +151,7 @@ def _source_type(source: dict) -> tuple[str, str]:
 
 def _render_result(result: dict) -> None:
     status = result.get("status", "needs_review")
-    if status == "recommendation" and not result.get("human_review"):
+    if status == "recommendation":
         banner_class, label, heading = "ready", "Suggested next steps", "Review before sharing or taking action"
     elif status == "unsupported":
         banner_class, label, heading = "unsupported", "No reliable next step found", "The available information was not enough to suggest what to do"
@@ -162,9 +174,8 @@ def _render_result(result: dict) -> None:
     with right:
         st.markdown(f'<div class="metric confidence-metric"><div class="metric-label">Category confidence</div><div class="metric-value">{confidence_text}</div></div>', unsafe_allow_html=True)
     with third:
-        review_text = "Required" if result.get("human_review", True) else "Not required"
-        review_style = "review-needed" if result.get("human_review", True) else "review-clear"
-        st.markdown(f'<div class="metric {review_style}"><div class="metric-label">Human review</div><div class="metric-value">{review_text}</div></div>', unsafe_allow_html=True)
+        assessment, _ = _agent_assessment(result)
+        st.markdown(f'<div class="metric agent-assessment"><div class="metric-label">Agent assessment</div><div class="metric-value">{_safe(assessment)}</div></div>', unsafe_allow_html=True)
 
     steps = result.get("steps") or []
     sources = result.get("sources") or []
@@ -215,40 +226,25 @@ def _render_result(result: dict) -> None:
                 for item in reasons:
                     st.markdown(f"- {_safe(item)}")
 
-    answer_validation = result.get("answer_validation") or {}
-    step_validation = result.get("step_validation") or {}
     safety = result.get("safety_assessment") or {}
     withheld_steps = result.get("withheld_steps") or []
-    if answer_validation or step_validation or safety or withheld_steps:
-        with st.expander("Validation and safety details"):
-            if answer_validation:
-                st.markdown(f"**Answer validation:** {_safe(answer_validation.get('status', 'not available'))}")
-                for issue in answer_validation.get("issues") or []:
-                    st.markdown(f"- {_safe(issue)}")
-            if step_validation:
-                st.markdown(f"**Step validation:** {_safe(step_validation.get('status', 'not available'))}")
-                for issue in step_validation.get("issues") or []:
-                    st.markdown(f"- {_safe(issue)}")
-            if safety:
-                st.markdown(f"**Safety decision:** {_safe(safety.get('decision', 'not evaluated'))}")
-                transaction = safety.get("apt_transaction") or {}
-                if transaction:
-                    st.markdown(f"**APT transaction:** {_safe(transaction.get('status', 'not available'))}")
-                    if transaction.get("kernel_removal_planned"):
-                        st.warning("The analyzed APT transaction includes a planned kernel removal.")
-                    for reason in transaction.get("reasons") or []:
-                        st.markdown(f"- {_safe(reason)}")
-                for item in safety.get("recommendations") or []:
-                    target = _safe(item.get("target", "recommendation"))
-                    decision = _safe(item.get("decision", "not evaluated"))
-                    st.markdown(f"**{target}: {decision}**")
-                    for reason in item.get("reasons") or []:
-                        st.markdown(f"- {_safe(reason)}")
-            if withheld_steps:
-                st.markdown(f"**Withheld suggestions:** {len(withheld_steps)}")
-                for item in withheld_steps:
-                    for issue in item.get("issues") or []:
-                        st.markdown(f"- {_safe(issue)}")
+    transaction = safety.get("apt_transaction") or {}
+    if safety.get("decision") == "escalate":
+        if transaction.get("kernel_removal_planned"):
+            st.warning("Safety review needed: the proposed package operation would remove a Linux kernel.")
+        else:
+            safety_reasons = [
+                detail
+                for recommendation in (safety.get("recommendations") or [])
+                for detail in recommendation.get("reasons", [])
+            ]
+            st.warning("Safety review needed: " + (safety_reasons[0] if safety_reasons else "the agent flagged a potentially risky action."))
+    if withheld_steps:
+        st.markdown("### Suggestions not shown")
+        for item in withheld_steps:
+            st.markdown(f"**{_safe(item.get('instruction') or 'A suggested action was withheld')}**")
+            for issue in item.get("issues") or []:
+                st.caption(_safe(issue))
 
     st.markdown("### Information used")
     if not sources:
@@ -288,6 +284,21 @@ def _status_description(status: str) -> str:
         "escalated": "The support team marked this request for specialist review. This status does not mean it was automatically transferred.",
     }
     return descriptions.get(status, "Check the latest update from the support team.")
+
+
+def _agent_assessment(result: dict) -> tuple[str, str]:
+    """Return a useful, case-specific summary instead of the always-on review flag."""
+    status = result.get("status")
+    safety = result.get("safety_assessment") or {}
+    if status == "unsupported":
+        return "Outside support scope", "unsupported"
+    if safety.get("decision") == "escalate":
+        return "Escalation advised", "escalate"
+    if result.get("missing_information"):
+        return "More details needed", "review"
+    if status == "recommendation":
+        return "Recommendation ready", "ready"
+    return "Needs review", "review"
 
 
 def _render_request_status(ticket: dict) -> None:
@@ -383,6 +394,92 @@ def _requester_tracking(api_base: str) -> None:
         _render_request_status(ticket)
 
 
+def _render_agent_message(message: dict) -> None:
+    is_engineer = message.get("role") == "engineer"
+    with st.chat_message("user" if is_engineer else "assistant"):
+        st.caption("IT Support" if is_engineer else "ResolveX agent")
+        analysis = message.get("analysis") or {}
+        if not is_engineer and analysis.get("error"):
+            st.warning("The AI service is temporarily unavailable. Please try again in a little while.")
+            return
+
+        st.write(message.get("content") or "")
+        if not is_engineer and analysis:
+            sources = {
+                source.get("source_id"): source
+                for source in analysis.get("sources", [])
+                if source.get("source_id")
+            }
+            citations = list(analysis.get("answer_citations", []))
+            for step in analysis.get("steps", []):
+                citations.extend(step.get("citations", []))
+            if citations or analysis.get("error"):
+                with st.expander("Evidence and response checks"):
+                    if analysis.get("error"):
+                        st.warning(analysis["error"])
+                    for citation in citations:
+                        source = sources.get(citation.get("source_id"), {})
+                        if source.get("url"):
+                            st.markdown(f"[{_safe(source.get('title') or citation['source_id'])}]({source['url']})")
+                        else:
+                            st.markdown(f"**{_safe(citation.get('source_id'))}**")
+                        st.caption(citation.get("quote") or "")
+                    st.caption(f"Agent status: {analysis.get('status', 'not available')}")
+                    if analysis.get("review_reasons"):
+                        st.write("Review notes:", analysis["review_reasons"])
+
+
+def _engineer_agent_panel(api_base: str, ticket_id: str) -> None:
+    """Render the ticket-scoped agent conversation in a floating assistant widget."""
+    state_key = "floating_agent_open_ticket"
+    is_open = st.session_state.get(state_key) == ticket_id
+    with st.container(key="floating-agent-launcher"):
+        if st.button("🤖", key=f"floating-agent-toggle-{ticket_id}", help="Open the ResolveX assistant"):
+            st.session_state[state_key] = None if is_open else ticket_id
+            st.rerun()
+
+    if not is_open:
+        return
+
+    with st.container(key="floating-agent-panel"):
+        top = st.columns([1, 0.15])
+        with top[0]:
+            st.markdown('<div class="floating-agent-eyebrow">INTERNAL TICKET ASSISTANT</div><div class="floating-agent-title">ResolveX support agent</div>', unsafe_allow_html=True)
+        with top[1]:
+            if st.button("×", key=f"floating-agent-close-{ticket_id}", help="Close assistant"):
+                st.session_state[state_key] = None
+                st.rerun()
+        st.caption("Private to IT Support. Review suggestions before acting.")
+        try:
+            conversation = get_engineer_agent_conversation(api_base, ticket_id)
+        except ApiRequestError as exc:
+            st.error(str(exc))
+            conversation = {"messages": []}
+
+        with st.container(height=300, border=True):
+            if not conversation["messages"]:
+                with st.chat_message("assistant"):
+                    st.caption("ResolveX agent")
+                    st.write("Hi! I can explain this ticket’s analysis, review its sources, or suggest a safe next check. Type your question below and select **Send**.")
+            for message in conversation["messages"]:
+                _render_agent_message(message)
+
+        with st.form(f"agent-question-{ticket_id}", clear_on_submit=True):
+            question = st.text_input(
+                "Message the assistant",
+                placeholder="Type a question about this ticket…",
+                label_visibility="collapsed",
+            )
+            submitted = st.form_submit_button("Send", type="primary", use_container_width=True)
+        if submitted and question.strip():
+            try:
+                with st.spinner("ResolveX is reviewing the ticket and evidence…"):
+                    ask_engineer_agent(api_base, ticket_id, question.strip())
+                st.rerun()
+            except ApiRequestError as exc:
+                st.error(str(exc))
+
+
 def _engineer_workspace(api_base: str) -> None:
     st.markdown("## Support team inbox")
     try:
@@ -438,6 +535,8 @@ def _engineer_workspace(api_base: str) -> None:
         if ticket.get("analysis"):
             st.markdown("---")
             _render_result(ticket["analysis"])
+
+    _engineer_agent_panel(api_base, selected_id)
 
     with st.container(border=True):
         st.markdown('<div class="support-section-heading update"><span class="section-dot"></span><span class="section-copy"><small>SUPPORT TEAM ACTION</small><strong>Update request</strong></span></div>', unsafe_allow_html=True)
