@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from src.models.classification import predict_ticket
 from src.ticket_store import TicketStore
@@ -31,7 +31,7 @@ class ApiServices:
     agent: Any | None
 
 
-class TicketRequest(BaseModel):
+class TicketTextRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     title: str = Field(max_length=1000)
@@ -48,6 +48,29 @@ class TicketRequest(BaseModel):
         return self
 
 
+class TicketRequest(TicketTextRequest):
+    product_type: Literal["ubuntu_desktop", "ubuntu_server"] | None = None
+    ubuntu_release: str | None = Field(default=None, max_length=32)
+
+    @field_validator("product_type", mode="before")
+    @classmethod
+    def normalize_product_type(cls, value):
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                return None
+            return {
+                "Ubuntu Desktop": "ubuntu_desktop",
+                "Ubuntu Server": "ubuntu_server",
+            }.get(value, value)
+        return value
+
+    @model_validator(mode="after")
+    def normalize_ubuntu_release(self):
+        self.ubuntu_release = self.ubuntu_release.strip() or None if self.ubuntu_release else None
+        return self
+
+
 class ClassificationResponse(BaseModel):
     category: str
     confidence: float = Field(ge=0, le=1)
@@ -61,6 +84,7 @@ class CitationResponse(BaseModel):
 
 class StepResponse(BaseModel):
     instruction: str
+    command: str | None = None
     citations: list[CitationResponse]
 
 
@@ -74,17 +98,28 @@ class EvidenceSourceResponse(BaseModel):
     release_scope: str | None = None
 
 
+class ValidationSummary(BaseModel):
+    status: str
+    issues: list[str] = Field(default_factory=list)
+
+
 class AnalysisResponse(BaseModel):
     category: str | None = None
     confidence: float | None = Field(default=None, ge=0, le=1)
     human_review: bool
     status: Literal["recommendation", "needs_review", "unsupported"]
     summary: str
+    answer: str = ""
+    answer_citations: list[CitationResponse] = Field(default_factory=list)
     steps: list[StepResponse]
     sources: list[EvidenceSourceResponse]
     missing_information: list[str]
     review_reasons: list[str]
     citation_check: str | None = None
+    answer_validation: ValidationSummary | None = None
+    step_validation: ValidationSummary | None = None
+    safety_assessment: dict[str, Any] | None = None
+    withheld_steps: list[dict[str, Any]] = Field(default_factory=list)
     error: str | None = None
 
 
@@ -100,6 +135,8 @@ class TicketCreatedResponse(BaseModel):
     status: str
     created_at: str
     updated_at: str
+    product_type: Literal["ubuntu_desktop", "ubuntu_server"] | None = None
+    ubuntu_release: str | None = None
 
 
 class RequesterTicketResponse(BaseModel):
@@ -118,6 +155,8 @@ class TicketStatusUpdate(BaseModel):
 
 class EngineerTicketResponse(RequesterTicketResponse):
     description: str
+    product_type: Literal["ubuntu_desktop", "ubuntu_server"] | None = None
+    ubuntu_release: str | None = None
     analysis: AnalysisResponse | None = None
 
 
@@ -132,10 +171,12 @@ def _load_api_services(root: Path) -> ApiServices:
     retriever = load_retriever(root)
     agent = None
     api_key = os.getenv("GEMINI_API_KEY")
+    from src.llm_provider import configured_model_name, configured_provider
+    provider = configured_provider()
     if api_key:
         from sentence_transformers import SentenceTransformer
         from src.official_docs import load_official_docs
-        from src.support_agent import SupportAgent, make_chain
+        from src.support_agent import SupportAgent, load_full_corpus_bm25, make_m5_chains
 
         if retriever.dense is not None:
             embedding_model = retriever.dense.model
@@ -148,7 +189,17 @@ def _load_api_services(root: Path) -> ApiServices:
                 local_files_only=True,
             )
         official_retriever, _ = load_official_docs(root, embedding_model)
-        agent = SupportAgent(classifier, retriever, make_chain(api_key), official_retriever)
+        chains = make_m5_chains(api_key, provider=provider)
+        pipeline_mode = os.getenv("AGENT_PIPELINE_MODE", "single").strip().lower()
+        use_multi_stage = pipeline_mode in {"multi", "multi_stage", "4stage"}
+        agent = SupportAgent(
+            classifier, retriever, chains["chain"], official_retriever,
+            load_full_corpus_bm25(root),
+            action_extractor=chains["action_extractor"] if use_multi_stage else None,
+            evidence_assessor=chains["evidence_assessor"] if use_multi_stage else None,
+            conflict_assessor=chains["conflict_assessor"] if use_multi_stage else None,
+            model_name=configured_model_name(provider),
+        )
     return ApiServices(classifier=classifier, retriever=retriever, agent=agent)
 
 
@@ -172,11 +223,17 @@ def _adapt_agent_response(raw: dict[str, Any]) -> AnalysisResponse:
         ),
         status=status,
         summary=raw.get("summary", "Engineer review is required."),
+        answer=raw.get("answer") or "",
+        answer_citations=raw.get("answer_citations") or [],
         steps=raw.get("steps") or [],
         sources=raw.get("sources") or [],
         missing_information=raw.get("missing_information") or [],
         review_reasons=raw.get("review_reasons") or [],
         citation_check=raw.get("citation_check"),
+        answer_validation=raw.get("answer_validation"),
+        step_validation=raw.get("step_validation"),
+        safety_assessment=raw.get("safety_assessment"),
+        withheld_steps=raw.get("withheld_steps") or [],
         error=raw.get("error"),
     )
 
@@ -237,7 +294,7 @@ def create_app(
         return result
 
     @app.post("/api/v1/classify", response_model=ClassificationResponse, tags=["tickets"])
-    def classify_ticket(payload: TicketRequest, request: Request):
+    def classify_ticket(payload: TicketTextRequest, request: Request):
         services: ApiServices = request.app.state.services
         try:
             return predict_ticket(services.classifier, payload.title, payload.description)
@@ -253,7 +310,12 @@ def create_app(
         if services.agent is None:
             _error(503, "analysis_unavailable", "Ticket analysis is not configured; check the server's model credentials and readiness.")
         try:
-            raw = services.agent.run(payload.title, payload.description)
+            raw = services.agent.run(
+                payload.title,
+                payload.description,
+                product_type=payload.product_type,
+                ubuntu_release=payload.ubuntu_release,
+            )
             return _adapt_agent_response(raw)
         except ValueError as exc:
             _error(422, "invalid_ticket", str(exc))
@@ -263,7 +325,12 @@ def create_app(
 
     @app.post("/api/v1/tickets", response_model=TicketCreatedResponse, status_code=201, tags=["tickets"])
     def submit_ticket(payload: TicketRequest, request: Request):
-        record, token = request.app.state.ticket_store.create(payload.title, payload.description)
+        record, token = request.app.state.ticket_store.create(
+            payload.title,
+            payload.description,
+            product_type=payload.product_type,
+            ubuntu_release=payload.ubuntu_release,
+        )
         return {**record, "tracking_token": token}
 
     @app.get("/api/v1/requester/status", response_model=RequesterTicketResponse, tags=["tickets"])
@@ -291,7 +358,11 @@ def create_app(
         if ticket is None:
             _error(404, "ticket_not_found", "Ticket was not found.")
         try:
-            result = _adapt_agent_response(services.agent.run(ticket["title"], ticket["description"]))
+            result = _adapt_agent_response(services.agent.run(
+                ticket["title"], ticket["description"],
+                product_type=ticket.get("product_type"),
+                ubuntu_release=ticket.get("ubuntu_release"),
+            ))
         except ValueError as exc:
             _error(422, "invalid_ticket", str(exc))
         except Exception as exc:

@@ -25,6 +25,10 @@ from src.retrieval import MODEL_ID, MODEL_REVISION, chunk_spans
 OFFICIAL_SOURCES = [
     {"url": "https://manpages.ubuntu.com/manpages/resolute/man1/nmcli.1.html", "title": "Ubuntu manpage: nmcli", "categories": ["Network & Connectivity"], "release_scope": "Ubuntu 26.04 LTS (Resolute); NetworkManager command reference", "source_type": "official_ubuntu_manpage"},
     {"url": "https://ubuntu.com/server/docs/how-to/networking/", "title": "Networking", "categories": ["Network & Connectivity"], "release_scope": "Ubuntu Server documentation; current documentation site"},
+    {"url": "https://manpages.ubuntu.com/manpages/jammy/man1/resolvectl.1.html", "title": "Ubuntu 22.04 manpage: resolvectl", "categories": ["Network & Connectivity"], "release_scope": "Ubuntu 22.04 LTS (Jammy); DNS lookups and resolver status", "source_type": "official_ubuntu_manpage"},
+    {"url": "https://manpages.ubuntu.com/manpages/resolute/man1/resolvectl.1.html", "title": "Ubuntu 26.04 manpage: resolvectl", "categories": ["Network & Connectivity"], "release_scope": "Ubuntu 26.04 LTS (Resolute); DNS lookups and resolver status", "source_type": "official_ubuntu_manpage"},
+    {"url": "https://manpages.ubuntu.com/manpages/jammy/man8/apt-get.8.html", "title": "Ubuntu 22.04 manpage: apt-get", "categories": ["Software & Packages"], "release_scope": "Ubuntu 22.04 LTS (Jammy); package-index update and package installation command reference", "source_type": "official_ubuntu_manpage"},
+    {"url": "https://ubuntu.com/server/docs/explanation/networking/configuring-networks/", "title": "Configuring networks and name resolution", "categories": ["Network & Connectivity"], "release_scope": "Current Ubuntu Server documentation; network and DNS client configuration"},
     {"url": "https://ubuntu.com/desktop/docs/en/26.04/tutorial/install-ubuntu-desktop/", "title": "Install Ubuntu Desktop", "categories": ["Boot & Startup", "Storage & Filesystems"], "release_scope": "Ubuntu Desktop 26.04; installation only"},
     {"url": "https://ubuntu.com/desktop/docs/en/26.04/how-to/software/", "title": "Install or remove software", "categories": ["Software & Packages"], "release_scope": "Ubuntu Desktop 26.04"},
     {"url": "https://ubuntu.com/server/docs/how-to/software/package-management/", "title": "Install and manage packages", "categories": ["Software & Packages"], "release_scope": "Current Ubuntu Server documentation; APT package-index, install and upgrade command reference"},
@@ -148,10 +152,16 @@ def build_official_docs(root, model, refresh=False):
         for part, (start, end, _large_code) in enumerate(chunk_spans(page["body"], max_words=100)):
             text = page["body"][start:end].strip()
             if text:
-                chunks.append({"source_id": page["url"], "title": page["title"], "url": page["url"],
-                               "categories": page["categories"], "release_scope": page["release_scope"],
-                               "source_type": page.get("source_type", "official_ubuntu_documentation"), "part": part,
-                               "content_hash": page["content_hash"], "text": text})
+                chunk = {"source_id": page["url"], "title": page["title"], "url": page["url"],
+                         "categories": page["categories"], "release_scope": page["release_scope"],
+                         "source_type": page.get("source_type", "official_ubuntu_documentation"),
+                         "part": part, "content_hash": page["content_hash"], "text": text}
+                for metadata_key in (
+                    "product_scope", "supported_releases", "source_date", "last_modified"
+                ):
+                    if metadata_key in page:
+                        chunk[metadata_key] = page[metadata_key]
+                chunks.append(chunk)
     if not chunks:
         raise RuntimeError("No official Ubuntu pages were fetched; no index was created")
 
@@ -234,18 +244,77 @@ class OfficialDocsRetriever:
         self.model, self.index, self.chunks = model, index, chunks
         self.manifest = {}
 
-    def search(self, query, k=3):
+    @staticmethod
+    def _scope_metadata(record, product_type=None, ubuntu_release=None):
+        scope = str(record.get("release_scope", ""))
+        lowered = scope.casefold()
+        product_scope = record.get("product_scope")
+        if product_scope is None:
+            if "desktop" in lowered:
+                product_scope = ["ubuntu_desktop"]
+            elif "server" in lowered:
+                product_scope = ["ubuntu_server"]
+            else:
+                product_scope = []
+        elif isinstance(product_scope, str):
+            product_scope = [product_scope]
+        release_scope = record.get("supported_releases")
+        if release_scope is None:
+            release_scope = sorted(set(re.findall(r"(?<!\d)\d{2}\.\d{2}(?!\d)", scope)))
+        elif isinstance(release_scope, str):
+            release_scope = [release_scope]
+        requested_release = None
+        if ubuntu_release:
+            requested_release_match = re.search(
+                r"(?<!\d)(\d{2}\.\d{2})(?!\d)", str(ubuntu_release)
+            )
+            requested_release = requested_release_match.group(1) if requested_release_match else None
+        product_status = "unknown"
+        if product_type and product_scope:
+            product_status = "match" if product_type in product_scope else "mismatch"
+        release_status = "unknown"
+        if requested_release and release_scope:
+            release_status = "match" if requested_release in release_scope else "mismatch"
+        statuses = {product_status, release_status}
+        if "mismatch" in statuses:
+            scope_status = "mismatch"
+        elif product_status == "match" and release_status == "match":
+            scope_status = "match"
+        else:
+            scope_status = "unknown"
+        return {
+            "product_scope": product_scope or None,
+            "release_scope": scope,
+            "supported_releases": release_scope or None,
+            "product_scope_status": product_status,
+            "release_scope_status": release_status,
+            "scope_status": scope_status,
+        }
+
+    def search(self, query, k=3, product_type=None, ubuntu_release=None,
+               deduplicate_pages=True):
         if not isinstance(query, str) or not query.strip():
             raise ValueError("Provide nonempty ticket text")
         if not 1 <= k <= len(self.chunks):
             raise ValueError("k is outside the official-documentation index")
         vector = self.model.encode([query], normalize_embeddings=True, show_progress_bar=False)
         scores, positions = self.index.search(np.asarray(vector, dtype="float32"), self.index.ntotal)
-        best_by_url = {}
+        results, seen_urls = [], set()
         for score, position in zip(scores[0], positions[0]):
             if position < 0:
                 continue
             record = self.chunks[int(position)]
-            if record["url"] not in best_by_url:
-                best_by_url[record["url"]] = {**record, "score": float(score)}
-        return sorted(best_by_url.values(), key=lambda item: (-item["score"], item["url"]))[:k]
+            if deduplicate_pages and record["url"] in seen_urls:
+                continue
+            seen_urls.add(record["url"])
+            results.append({
+                **record,
+                "lane": "official_ubuntu_docs",
+                "retrieval_method": "official_docs_minilm_faiss_cosine",
+                "score": float(score),
+                "source_date": record.get("source_date") or record.get("last_modified"),
+                "date_status": "known" if record.get("source_date") or record.get("last_modified") else "unknown",
+                **self._scope_metadata(record, product_type, ubuntu_release),
+            })
+        ordered = sorted(results, key=lambda item: (-item["score"], item["url"], item.get("part", 0)))[:k]
+        return [{**item, "rank": rank} for rank, item in enumerate(ordered, 1)]

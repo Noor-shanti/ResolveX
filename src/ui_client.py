@@ -57,8 +57,27 @@ def _requester_headers(tracking_token: str) -> dict[str, str]:
     return {"X-Ticket-Token": tracking_token}
 
 
-def create_ticket(api_base: str, title: str, description: str, *, session: Any = requests) -> dict[str, Any]:
-    payload = _request(api_base, "POST", "/api/v1/tickets", json={"title": title, "description": description}, session=session)
+def create_ticket(
+    api_base: str,
+    title: str,
+    description: str,
+    *,
+    product_type: str | None = None,
+    ubuntu_release: str | None = None,
+    session: Any = requests,
+) -> dict[str, Any]:
+    payload = _request(
+        api_base,
+        "POST",
+        "/api/v1/tickets",
+        json={
+            "title": title,
+            "description": description,
+            "product_type": product_type,
+            "ubuntu_release": ubuntu_release,
+        },
+        session=session,
+    )
     if not isinstance(payload, dict) or not payload.get("tracking_token"):
         raise ApiRequestError("The service did not return a ticket tracking credential.")
     return payload
@@ -118,15 +137,22 @@ def analyze_ticket(
     title: str,
     description: str,
     *,
+    product_type: str | None = None,
+    ubuntu_release: str | None = None,
     timeout: float = 180,
     session: Any = requests,
 ) -> dict[str, Any]:
     """Submit a local-prototype analysis request to FastAPI."""
+    request_payload = {"title": title, "description": description}
+    if product_type is not None:
+        request_payload["product_type"] = product_type
+    if ubuntu_release is not None:
+        request_payload["ubuntu_release"] = ubuntu_release
     payload = _request(
         api_base,
         "POST",
         "/api/v1/analyze",
-        json={"title": title, "description": description},
+        json=request_payload,
         timeout=timeout,
         session=session,
     )

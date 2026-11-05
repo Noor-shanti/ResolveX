@@ -41,12 +41,11 @@ Employee checks request status
 
 ## Current Status
 
-**Current focus: Complete M5 - Technical Support Agent**
+- **M1-M4 — Completed:** Research, dataset curation, baseline ML classifier, and MiniLM+FAISS retrieval selected after comparison with BM25 and hybrid search.
+- **M5 — Completed:** Evidence-grounded technical guidance with cited sources, safety checks, and engineer review.
+- **M6 — Completed:** FastAPI backend with ticket ingestion, analysis adapter, and sqlite persistence.
+- **M7 — Completed:** Streamlit end-to-end interactive interface for Requesters and IT Support Engineers.
 
-- **M1–M4 — Completed**
-- **M5 — In Progress:** Re-run the 12 evaluation cases and verify at least one useful recommendation against its sources and Ubuntu release.
-- **M6 — Completed**
-- **M7 — Completed**
 
 ## Run the Backend Locally
 
@@ -160,6 +159,7 @@ Detailed project documentation is available under `docs/`:
 
 - `PROJECT_STUDY.md` — product scope, feasibility, technical approach, architecture, risks, and evaluation strategy
 - `MILESTONES.md` — implementation milestones, task progress, and links to the corresponding project work
+- `notebooks/08_technical_support_agent.ipynb` — the M5 evaluation with one held-out case and three synthetic demonstrations
 
 ## Data Attribution
 

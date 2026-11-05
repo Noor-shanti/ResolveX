@@ -17,7 +17,11 @@ class _ClassifierPipeline:
 
 
 class _Agent:
-    def run(self, title, body):
+    def __init__(self):
+        self.calls = []
+
+    def run(self, title, body, **context):
+        self.calls.append((title, body, context))
         return {
             "category": "Network & Connectivity",
             "classification": {
@@ -26,27 +30,50 @@ class _Agent:
                 "human_review": False,
             },
             "status": "needs_review",
+            "decision_outcome": "limited_diagnostic_guidance",
             "summary": "Review the evidence before troubleshooting.",
+            "answer": "The resolver query can check whether the hostname resolves.",
+            "answer_citations": [{
+                "source_id": "OD1", "quote": "resolvectl query HOSTNAME",
+            }],
             "engineer_review_required": True,
             "steps": [{
                 "instruction": "Check the current connection state.",
+                "command": "nmcli device status",
                 "citations": [{"source_id": "OD1", "quote": "nmcli device status"}],
             }],
             "sources": [{
                 "source_id": "OD1",
+                "lane": "official_ubuntu_docs",
                 "source_type": "official_ubuntu_manpage",
                 "title": "Ubuntu manpage: nmcli",
                 "url": "https://manpages.ubuntu.com/manpages/resolute/man1/nmcli.1.html",
                 "release_scope": "Ubuntu 26.04 LTS",
+                "product_scope": None,
+                "supported_releases": ["26.04"],
+                "scope_status": "unknown",
+                "retrieval_method": "official_docs_minilm_faiss_cosine",
+                "rank": 1,
+                "score": 0.81,
+                "source_date": None,
+                "date_status": "unknown",
                 "answer_excerpt": "nmcli device status",
             }],
             "missing_information": [],
             "review_reasons": ["Review the result before taking further action."],
             "citation_check": "passed",
+            "answer_validation": {"status": "passed", "issues": []},
+            "step_validation": {"status": "passed", "issues": []},
+            "safety_assessment": {
+                "decision": "allow",
+                "apt_transaction": {"status": "absent", "kernel_removal_planned": False},
+                "recommendations": [],
+            },
+            "withheld_steps": [],
         }
 
 
-def _services(agent=True):
+def _services(agent=True, agent_instance=None):
     return ApiServices(
         classifier={
             "pipeline": _ClassifierPipeline(),
@@ -54,14 +81,14 @@ def _services(agent=True):
             "review_policy": {"threshold": 0.5},
         },
         retriever=object(),
-        agent=_Agent() if agent else None,
+        agent=(agent_instance or _Agent()) if agent else None,
     )
 
 
 @contextmanager
-def _client(agent=True):
+def _client(agent=True, agent_instance=None):
     with tempfile.TemporaryDirectory() as temp_dir:
-        app = create_app(lambda root: _services(agent=agent), root=Path(temp_dir))
+        app = create_app(lambda root: _services(agent=agent, agent_instance=agent_instance), root=Path(temp_dir))
         with TestClient(app) as client:
             yield client
 
@@ -90,9 +117,35 @@ class ApiTests(unittest.TestCase):
         result = response.json()
         self.assertTrue(result["human_review"])
         self.assertEqual(result["status"], "needs_review")
+        self.assertNotIn("decision_outcome", result)
         self.assertEqual(result["sources"][0]["source_id"], "OD1")
         self.assertEqual(result["sources"][0]["release_scope"], "Ubuntu 26.04 LTS")
+        self.assertEqual(result["sources"][0]["lane"], "official_ubuntu_docs")
+        self.assertEqual(result["sources"][0]["scope_status"], "unknown")
+        self.assertEqual(result["sources"][0]["retrieval_method"], "official_docs_minilm_faiss_cosine")
+        self.assertEqual(result["answer"], "The resolver query can check whether the hostname resolves.")
+        self.assertEqual(result["answer_citations"][0]["source_id"], "OD1")
+        self.assertEqual(result["answer_citations"][0]["quote"], "resolvectl query HOSTNAME")
+        self.assertEqual(result["steps"][0]["command"], "nmcli device status")
         self.assertEqual(result["steps"][0]["citations"][0]["quote"], "nmcli device status")
+        self.assertEqual(result["answer_validation"]["status"], "passed")
+        self.assertEqual(result["safety_assessment"]["decision"], "allow")
+
+    def test_direct_analysis_passes_optional_product_and_release_context(self):
+        agent = _Agent()
+        with _client(agent_instance=agent) as client:
+            response = client.post("/api/v1/analyze", json={
+                "title": "DNS lookup fails",
+                "description": "Ubuntu Server ticket",
+                "product_type": "Ubuntu Server",
+                "ubuntu_release": "22.04",
+            })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(agent.calls[0][2], {
+            "product_type": "ubuntu_server",
+            "ubuntu_release": "22.04",
+        })
 
     def test_validation_errors_do_not_echo_ticket_text(self):
         with _client() as client:
@@ -134,6 +187,56 @@ class ApiTests(unittest.TestCase):
         self.assertNotIn("description", status.json())
         self.assertEqual(bad_token.status_code, 404)
 
+    def test_ticket_environment_fields_are_optional_and_persist_separately(self):
+        with _client() as client:
+            legacy_shape = client.post("/api/v1/tickets", json={"title": "Older client ticket"})
+            structured = client.post("/api/v1/tickets", json={
+                "title": "Server package issue",
+                "description": "Package installation fails.",
+                "product_type": "ubuntu_server",
+                "ubuntu_release": "24.04",
+            })
+            queue = client.get("/api/v1/engineer/tickets").json()
+
+        self.assertEqual(legacy_shape.status_code, 201)
+        self.assertIsNone(legacy_shape.json()["product_type"])
+        self.assertIsNone(legacy_shape.json()["ubuntu_release"])
+        self.assertEqual(structured.status_code, 201)
+        self.assertEqual(structured.json()["product_type"], "ubuntu_server")
+        self.assertEqual(structured.json()["ubuntu_release"], "24.04")
+        by_id = {ticket["ticket_id"]: ticket for ticket in queue}
+        self.assertIsNone(by_id[legacy_shape.json()["ticket_id"]]["product_type"])
+        saved = by_id[structured.json()["ticket_id"]]
+        self.assertEqual(saved["product_type"], "ubuntu_server")
+        self.assertEqual(saved["ubuntu_release"], "24.04")
+
+    def test_product_type_accepts_missing_null_blank_and_supported_labels(self):
+        cases = [
+            ({}, None),
+            ({"product_type": None}, None),
+            ({"product_type": ""}, None),
+            ({"product_type": "   "}, None),
+            ({"product_type": "Ubuntu Desktop"}, "ubuntu_desktop"),
+            ({"product_type": "Ubuntu Server"}, "ubuntu_server"),
+        ]
+        with _client() as client:
+            for index, (fields, expected) in enumerate(cases):
+                with self.subTest(fields=fields):
+                    response = client.post("/api/v1/tickets", json={
+                        "title": f"Optional product case {index}",
+                        **fields,
+                    })
+                    self.assertEqual(response.status_code, 201)
+                    self.assertEqual(response.json()["product_type"], expected)
+
+    def test_ticket_rejects_unsupported_product_type(self):
+        with _client() as client:
+            response = client.post("/api/v1/tickets", json={
+                "title": "Unsupported distro",
+                "product_type": "linux_mint",
+            })
+        self.assertEqual(response.status_code, 422)
+
     def test_engineer_queue_persists_analysis_and_status_in_local_prototype(self):
         with _client() as client:
             created = client.post("/api/v1/tickets", json={"title": "Wi-Fi issue", "description": "Ubuntu 26.04"}).json()
@@ -156,6 +259,22 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(updated.status_code, 200)
         self.assertEqual(tracked.json()["status"], "resolved")
         self.assertNotIn("analysis", tracked.json())
+
+    def test_engineer_analysis_passes_saved_environment_fields_to_agent(self):
+        agent = _Agent()
+        with _client(agent_instance=agent) as client:
+            created = client.post("/api/v1/tickets", json={
+                "title": "Server network issue", "description": "DNS lookup fails.",
+                "product_type": "ubuntu_server", "ubuntu_release": "24.04",
+            }).json()
+            response = client.post(
+                f"/api/v1/engineer/tickets/{created['ticket_id']}/analyze"
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(agent.calls), 1)
+        self.assertEqual(agent.calls[0][2], {
+            "product_type": "ubuntu_server", "ubuntu_release": "24.04",
+        })
 
     def test_invalid_ticket_status_transition_is_rejected(self):
         with _client() as client:

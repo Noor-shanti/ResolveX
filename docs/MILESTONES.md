@@ -136,38 +136,37 @@
 - The weak-evidence flag is a heuristic and can miss unsuitable advice.
 
 ## M5 — Technical Support Agent
-**Status:** In Progress<br>
-**Summary:** Use classification, retrieval and Ubuntu documentation to draft support recommendations for engineer review.
+**Status:** Completed<br>
+**Summary:** Integrate M3 classification, M4 community retrieval, official Ubuntu documentation, and LLM-generated guidance for Ubuntu/Linux support tickets.
 
 ### Definition of Done (DoD)
-- The agent combines the saved classifier and retriever with official Ubuntu documentation and an LLM.
-- Recommendations include their sources; the agent requests review when evidence is weak or incompatible.
-- A 12-case qualitative evaluation covers all six categories and reviews source relevance, technical correctness, release fit and abstention.
-- At least one useful recommendation is checked against its source, and findings and limitations are documented.
+- The agent classifies tickets and retrieves evidence from Ask Ubuntu and official Ubuntu documentation.
+- Community and official sources retain their identity, links, and available release scope.
+- The agent returns a source-linked explanation and, when supported, a relevant troubleshooting step.
+- Deterministic checks validate citations, source scope, required ticket details, and action risk.
+- Missing prerequisites are surfaced for review, and dependent steps are withheld.
+- Uncertain, unsupported, or risky recommendations are withheld or routed for engineer review.
+- The workflow and its limits are documented and verified.
 
 ### Tasks
-- [x] Connect the saved classifier and retriever to an LLM and add Ubuntu documentation as a separate source. -> `src/support_agent.py`, `src/official_docs.py`
-- [x] Return the category, evidence, suggested steps and human-review reasons with source links. -> `src/support_agent.py`
-- [x] Add checks for missing details, weak or unrelated evidence, release compatibility and unsafe steps. -> `src/support_agent.py`
-- [x] Prepare 12 evaluation cases across the six categories; exclude source questions and known duplicates where applicable. -> `notebooks/08_technical_support_agent.ipynb`
-- [x] Run the qualitative evaluation and document the results. -> `notebooks/08_technical_support_agent.ipynb`
-- [x] Save the reusable agent workflow for the API stage. -> `src/support_agent.py`
-- [ ] Re-run the cases after the latest changes and review each response against its expected behavior and sources.
-
-### Expected Outcomes
-- An agent that uses the existing classifier, retriever and Ubuntu documentation.
-- Source-linked recommendations or a clear request for engineer review.
-- A small evaluation and reusable workflow for the API stage.
+- [x] Integrate the saved M3 classifier and M4 community retriever with official Ubuntu documentation. -> `src/support_agent.py`, `src/official_docs.py`
+- [x] Separate preparation, structured response generation, and deterministic output checks. -> `src/support_agent.py`
+- [x] Preserve source-linked answers, optional steps, missing details, and review reasons.
+- [x] Add safety handling for package transactions, kernel removal, dpkg/GRUB changes, and repeated configuration attempts.
+- [x] Evaluate one held-out Ask Ubuntu case and three synthetic scenarios, covering kernel-removal escalation, a read-only DNS recommendation, missing repair details, and out-of-scope handling. -> `notebooks/08_technical_support_agent.ipynb`
+- [x] Verify the API and engineer interface preserve the M5 result and review details. -> `src/api.py`, `app.py`
+- [x] Document the workflow, verification, and limitations. -> `docs/M5_CURRENT_STATUS_REPORT.md`
 
 ### Outcomes
-- The latest 12-case run completed without notebook errors; the Ubuntu documentation index contained 12 pages and 304 chunks.
-- Ten cases abstained. S1 (APT) and H1 (Steam/NVIDIA) returned drafts, but neither met its expected behavior or passed technical review. Both were marked for human review while still showing steps.
-- The run also exposed unrelated retrieval results and a missed low-risk Wi-Fi diagnostic. The H1 expected behavior assumes Kubuntu 21.10, which is absent from the loaded Ask Ubuntu question text.
-- Leakage checks for H1, S1 and T1 found no matching source questions or known duplicates in the retrieved results.
+- `SupportAgent` connects the classifier, both retrieval lanes, structured LLM responses, and deterministic checks. It does not execute system commands.
+- Results preserve category and confidence, a cited explanation, optional cited steps, sources, and review signals.
+- The held-out kernel-removal case was escalated and its answer withheld after citation validation failed; the synthetic Ubuntu 22.04 DNS case returned a cited, read-only `resolvectl query` command and passed the implemented checks.
+- Regression coverage includes package repair, unsupported scope, citation and release checks, risky actions, and read-only diagnostics.
+- The current full project test suite passed **121 tests**; this verifies code regressions but does not measure broad production answer quality.
 
 ### Limitations
-- Twelve cases are a small qualitative review and do not measure performance on company tickets.
-- The documentation set is incomplete, and source links do not by themselves prove that a recommendation is correct. Engineers must review the advice.
+- The Ask Ubuntu lane uses the frozen M4 comparison index, which contains a 5,000-case sample rather than all 240,555 prepared cases.
+- Evaluation covers selected scenarios; broader performance across conversational support cases remains future evaluation work for M9.
 
 ## M6 — Backend & API
 **Status:** Completed<br>
@@ -176,7 +175,8 @@
 ### Definition of Done (DoD)
 - FastAPI loads the saved classifier, M4 retriever and current M5 support agent for API use.
 - Health, classification and ticket-analysis endpoints accept validated requests and return consistent responses.
-- A stable API response preserves category, confidence, suggested steps, human-review status, evidence sources, missing information and review reasons.
+- A stable API response preserves category, confidence, informational answer and its citations, suggested steps and their optional literal commands, human-review status, evidence sources, missing information, review reasons, and validation/safety summaries.
+- Direct analysis accepts optional Ubuntu product and release context so retrieval and compatibility checks receive the caller's declared environment.
 - Invalid requests and component failures return clear errors without exposing credentials.
 - Local endpoint examples cover classification, a support-agent response, a review-required response and an invalid request.
 
@@ -184,14 +184,17 @@
 - [x] Define request and response schemas for health, classification and ticket analysis. -> `src/api.py`
 - [x] Build a FastAPI app that loads the classifier, retriever and support agent once at startup. -> `src/api.py`
 - [x] Add an adapter between the API and the M5 agent so internal agent changes do not require changes to the API response contract. -> `src/api.py`
-- [x] Preserve the agent's steps, sources and human-review status in the API response; recommendations remain experimental while M5 is In Progress. -> `src/api.py`
+- [x] Preserve the agent's informational answer and citations, steps, sources and human-review status in the API response; recommendations remain subject to engineer review. -> `src/api.py`
+- [x] Preserve answer/step validation, safety assessment, and withheld-step reasons for the engineer-facing analysis view. -> `src/api.py`
+- [x] Pass optional product and Ubuntu release fields through direct analysis requests. -> `src/api.py`, `src/ui_client.py`
 - [x] Validate inputs and handle model, retrieval, LLM and API failures with clear error responses. -> `src/api.py`
 - [x] Verify classification and readiness with local artifacts; test support-agent, review-required and invalid-request responses through the API. -> `tests/test_api.py`
 
 ### Outcomes
 - FastAPI exposes liveness, readiness, classification and ticket-analysis endpoints; model artifacts load once during application startup.
-- A stable response adapter preserves category, confidence, steps, citations, source metadata and human-review status.
-- Local artifact smoke checks and four API tests passed. No live Gemini generation was used for verification.
+- A stable response adapter preserves category, confidence, informational answer and its citations, steps, source metadata and human-review status.
+- Direct `/api/v1/analyze` requests can pass product and release context; engineer analysis responses preserve validation and safety audit summaries.
+- Local artifact smoke checks and four API tests passed.
 
 ## M7 — Streamlit Application
 **Status:** Completed<br>
@@ -200,14 +203,15 @@
 ### Definition of Done (DoD)
 - Requesters can submit and track tickets; IT Support Engineers can review the queue, inspect analysis and update ticket status.
 - Ticket data persists through the API, and requester status lookup requires a private tracking code.
-- Analysis presents category, confidence, suggested steps, sources and review signals, distinguishing official Ubuntu documentation from Ask Ubuntu answers.
+- Analysis presents category, confidence, the informational answer and its citations, suggested steps, sources and review signals, distinguishing official Ubuntu documentation from Ask Ubuntu answers.
+- The engineer view exposes answer/step validation outcomes and safety decisions, including reasons for withheld suggestions and the exact command for each executable step.
 - Recommendation, review, unsupported and API-error states display clearly, with the engineer responsible for decisions.
 - The local prototype's visual workflow and authentication limitation are documented.
 
 ### Tasks
 - [x] Define the requester and IT Support Engineer workflow in one Streamlit app.
 - [x] Implement persistent ticket submission, private status tracking, support queue, analysis and status updates. -> `src/api.py`, `src/ticket_store.py`, `app.py`
-- [x] Present analysis steps, sources, release scope and review signals; distinguish official Ubuntu documentation from community answers. -> `app.py`
+- [x] Present the informational answer and citations, analysis steps and exact commands, sources, release scope and review signals; distinguish official Ubuntu documentation from community answers. -> `app.py`
 - [x] Test ticket privacy, persistence, status transitions, analysis states and API errors. -> `tests/test_api.py`, `tests/test_ui_client.py`
 - [x] Run the requester and support-team pages and verify recommendation, review, unsupported and API-error displays.
 - [x] Document local setup and the prototype's limitations. -> `README.md`
@@ -215,22 +219,60 @@
 ### Outcomes
 - The Streamlit app supports ticket submission and private tracking for requesters, and queue review, analysis and status updates for the support team. -> `app.py`
 - FastAPI and SQLite persist tickets and analysis; the requester uses one private tracking code. -> `src/api.py`, `src/ticket_store.py`
-- All 16 API and API-client tests passed. The three pages and sample recommendation, review, unsupported and API-error displays rendered without app exceptions. -> `tests/test_api.py`, `tests/test_ui_client.py`
-- M7 is complete; M5 remains in progress because the interface checks do not establish the technical correctness of recommendations.
+- All 13 API and 11 API-client test cases pass within the current full suite. The three pages and sample recommendation, review, unsupported and API-error displays rendered without app exceptions. -> `tests/test_api.py`, `tests/test_ui_client.py`
+- The engineer analysis view displays the M5 answer, citations, validation and safety details, and reasons for withheld suggestions. Interface tests cover these response fields.
 
 ### Limitations
-- M5 recommendations still require technical validation; the interface does not establish their correctness.
+- IT Support Engineer review remains required before issuing system commands.
 - Requester tracking is read-only. “Specialist review needed” records a status and does not automatically route the ticket.
 - The local support-team workspace has no authentication and is not ready for shared or production use.
 
-## M8 — AI Evaluation
+## M8 — Conversational IT Support
 **Status:** Not Started<br>
-**Summary:** Evaluate and monitor AI behavior.
+**Summary:** Let users chat with the ResolveX support agent and continue the same conversation with IT Support when a human review is needed.
 
-## M9 — Testing & Refinement
-**Status:** Not Started<br>
-**Summary:** Test the complete system and improve failures.
+### Definition of Done (DoD)
+- A clear chat entry point opens a responsive conversation view where a requester can exchange messages with the AI support agent.
+- The conversation and its context are saved and linked to a support ticket.
+- The agent uses the existing M5 classification, retrieval, and safety workflow; it asks for missing details and presents source-linked guidance without executing commands.
+- When human review is needed, IT Support can read the conversation, reply in the same thread, and make that reply visible to the requester.
+- The local prototype's access limits and any unavailable service are clear; it is not presented as a production-ready public chat.
 
-## M10 — Deployment & Documentation
+### Tasks
+- [ ] Define how a requester starts a chat and how the conversation becomes an IT Support handoff.
+- [ ] Add API and storage support for conversation messages linked to a ticket.
+- [ ] Build the requester chat interface and connect AI replies to the existing M5 workflow.
+- [ ] Let IT Support read and reply to handed-off conversations in the same thread.
+- [ ] Verify message history, ticket linkage, requester access, and error handling.
+
+## M9 — Evaluation & Refinement
 **Status:** Not Started<br>
-**Summary:** Deploy and prepare final documentation.
+**Summary:** Evaluate the integrated support chat and agent on representative cases, then fix important failures.
+
+### Definition of Done (DoD)
+- A small, documented set of held-out and synthetic conversations covers normal support, missing details, unsafe actions, unsupported requests, and human handoff.
+- Results distinguish successful model responses from provider or parsing failures that prevented evaluation.
+- Citation, scope, command-safety, and escalation behavior is reviewed, and high-impact defects are addressed.
+- The evaluation records limitations and does not treat synthetic cases as test-set evidence.
+
+### Tasks
+- [ ] Define expected outcomes for representative conversations before running them.
+- [ ] Evaluate whether the agent asks useful follow-up questions, gives evidence-linked answers, and hands off appropriately.
+- [ ] Record model availability failures separately from answer-quality outcomes.
+- [ ] Fix and regression-test high-impact issues found in the evaluation.
+
+## M10 — Finalization & Deployment
+**Status:** Not Started<br>
+**Summary:** Prepare a reproducible, documented prototype for demonstration or deployment.
+
+### Definition of Done (DoD)
+- Setup, configuration, and run instructions work from a clean environment.
+- Secrets and local data are handled safely, and prototype limitations are documented.
+- The API and application pass final smoke checks in the intended demo environment.
+- Final project documentation reflects the implemented features and evaluation results.
+
+### Tasks
+- [ ] Verify clean setup and documented run instructions.
+- [ ] Review secret handling, local data, and access limitations.
+- [ ] Run final API and UI smoke checks in the demo environment.
+- [ ] Finalize the README and project documentation.

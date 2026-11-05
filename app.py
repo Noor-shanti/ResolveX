@@ -169,11 +169,26 @@ def _render_result(result: dict) -> None:
     steps = result.get("steps") or []
     sources = result.get("sources") or []
     source_by_id = {str(source.get("source_id")): source for source in sources}
+    answer = result.get("answer") or ""
+    if answer:
+        st.markdown("### Draft answer")
+        st.markdown(_safe(answer))
+        for citation in result.get("answer_citations") or []:
+            src = source_by_id.get(str(citation.get("source_id")), {})
+            source_name = _safe(src.get("title") or citation.get("source_id"))
+            quote = _safe(citation.get("quote"))
+            st.caption(f"Answer evidence · {source_name}")
+            if quote:
+                st.markdown(f'<div class="quote">“{quote}”</div>', unsafe_allow_html=True)
+
     st.markdown("### Suggested next steps")
     if steps:
         for index, step in enumerate(steps, 1):
             instruction = _safe(step.get("instruction", ""))
             st.markdown(f'<div class="step-card"><span class="step-number">{index}</span><span class="step-copy">{instruction}</span></div>', unsafe_allow_html=True)
+            command = step.get("command")
+            if command:
+                st.code(command, language="bash")
             for citation in step.get("citations", []):
                 src = source_by_id.get(str(citation.get("source_id")), {})
                 source_name = _safe(src.get("title") or citation.get("source_id"))
@@ -199,6 +214,41 @@ def _render_result(result: dict) -> None:
                 st.markdown("**Why this needs review**")
                 for item in reasons:
                     st.markdown(f"- {_safe(item)}")
+
+    answer_validation = result.get("answer_validation") or {}
+    step_validation = result.get("step_validation") or {}
+    safety = result.get("safety_assessment") or {}
+    withheld_steps = result.get("withheld_steps") or []
+    if answer_validation or step_validation or safety or withheld_steps:
+        with st.expander("Validation and safety details"):
+            if answer_validation:
+                st.markdown(f"**Answer validation:** {_safe(answer_validation.get('status', 'not available'))}")
+                for issue in answer_validation.get("issues") or []:
+                    st.markdown(f"- {_safe(issue)}")
+            if step_validation:
+                st.markdown(f"**Step validation:** {_safe(step_validation.get('status', 'not available'))}")
+                for issue in step_validation.get("issues") or []:
+                    st.markdown(f"- {_safe(issue)}")
+            if safety:
+                st.markdown(f"**Safety decision:** {_safe(safety.get('decision', 'not evaluated'))}")
+                transaction = safety.get("apt_transaction") or {}
+                if transaction:
+                    st.markdown(f"**APT transaction:** {_safe(transaction.get('status', 'not available'))}")
+                    if transaction.get("kernel_removal_planned"):
+                        st.warning("The analyzed APT transaction includes a planned kernel removal.")
+                    for reason in transaction.get("reasons") or []:
+                        st.markdown(f"- {_safe(reason)}")
+                for item in safety.get("recommendations") or []:
+                    target = _safe(item.get("target", "recommendation"))
+                    decision = _safe(item.get("decision", "not evaluated"))
+                    st.markdown(f"**{target}: {decision}**")
+                    for reason in item.get("reasons") or []:
+                        st.markdown(f"- {_safe(reason)}")
+            if withheld_steps:
+                st.markdown(f"**Withheld suggestions:** {len(withheld_steps)}")
+                for item in withheld_steps:
+                    for issue in item.get("issues") or []:
+                        st.markdown(f"- {_safe(issue)}")
 
     st.markdown("### Information used")
     if not sources:
@@ -273,18 +323,27 @@ def _requester_portal(api_base: str) -> None:
     st.markdown("Describe the problem and include any error message. The support team will review your request.")
     with st.form("requester_ticket", clear_on_submit=True):
         title = st.text_input("Briefly describe the problem", max_chars=1000, placeholder="For example: Wi-Fi disconnects after the computer wakes up")
-        release = st.selectbox("Which Ubuntu version are you using? (if you know)", ["Not sure", "Ubuntu 26.04 LTS", "Ubuntu 24.04 LTS", "Ubuntu 22.04 LTS", "Ubuntu 20.04 LTS", "Another Ubuntu-based system"])
+        product_label = st.selectbox("Ubuntu system", ["Not sure", "Ubuntu Desktop", "Ubuntu Server"])
+        ubuntu_release = st.text_input("Ubuntu release (optional)", max_chars=32, placeholder="For example: 24.04")
         description = st.text_area("What happened?", height=170, max_chars=12000, placeholder="Tell us what you expected, what happened instead, and any recent changes.")
         submitted = st.form_submit_button("Send request", type="primary", use_container_width=True)
     if submitted:
         if not title.strip() and not description.strip():
             st.error("Enter an issue summary or description.")
             return
-        release_note = "" if release == "Not sure" else f"Ubuntu version: {release}"
-        full_description = "\n\n".join(part for part in (release_note, description.strip()) if part)
+        product_type = {
+            "Ubuntu Desktop": "ubuntu_desktop",
+            "Ubuntu Server": "ubuntu_server",
+        }.get(product_label)
         try:
             with st.spinner("Submitting your ticket…"):
-                ticket = create_ticket(api_base, title.strip(), full_description)
+                ticket = create_ticket(
+                    api_base,
+                    title.strip(),
+                    description.strip(),
+                    product_type=product_type,
+                    ubuntu_release=ubuntu_release.strip() or None,
+                )
             st.session_state["new_ticket_credentials"] = {
                 "tracking_token": ticket["tracking_token"],
             }
@@ -358,6 +417,12 @@ def _engineer_workspace(api_base: str) -> None:
             unsafe_allow_html=True,
         )
         with st.expander("Read the request details", expanded=True):
+            product_label = {
+                "ubuntu_desktop": "Ubuntu Desktop",
+                "ubuntu_server": "Ubuntu Server",
+            }.get(ticket.get("product_type"), "Not specified")
+            release = ticket.get("ubuntu_release") or "Not specified"
+            st.caption(f"System: {product_label} · Ubuntu release: {release}")
             st.write(ticket.get("description") or "No additional details were provided.")
 
     with st.container(border=True):

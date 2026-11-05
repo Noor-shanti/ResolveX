@@ -50,6 +50,15 @@ class TicketStore:
                     analysis_json TEXT
                 )
             """)
+            # Additive migration: existing tickets remain valid with NULL metadata.
+            columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(tickets)").fetchall()
+            }
+            if "product_type" not in columns:
+                connection.execute("ALTER TABLE tickets ADD COLUMN product_type TEXT")
+            if "ubuntu_release" not in columns:
+                connection.execute("ALTER TABLE tickets ADD COLUMN ubuntu_release TEXT")
             connection.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_tickets_tracking_token_hash "
                 "ON tickets (tracking_token_hash)"
@@ -87,21 +96,31 @@ class TicketStore:
     def _engineer_fields(row: sqlite3.Row) -> dict[str, Any]:
         item = TicketStore._public_fields(row)
         item["description"] = row["description"]
+        item["product_type"] = row["product_type"]
+        item["ubuntu_release"] = row["ubuntu_release"]
         item["analysis"] = json.loads(row["analysis_json"]) if row["analysis_json"] else None
         return item
 
-    def create(self, title: str, description: str) -> tuple[dict[str, Any], str]:
+    def create(
+        self,
+        title: str,
+        description: str,
+        product_type: str | None = None,
+        ubuntu_release: str | None = None,
+    ) -> tuple[dict[str, Any], str]:
         ticket_id = f"RX-{uuid.uuid4().hex[:10].upper()}"
         tracking_token = secrets.token_urlsafe(32)
         now = _now()
         with self._connection() as connection:
             connection.execute(
-                "INSERT INTO tickets (ticket_id, tracking_token_hash, title, description, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (ticket_id, _token_hash(tracking_token), title, description, "received", now, now),
+                "INSERT INTO tickets (ticket_id, tracking_token_hash, title, description, product_type, ubuntu_release, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (ticket_id, _token_hash(tracking_token), title, description, product_type, ubuntu_release, "received", now, now),
             )
         return {
             "ticket_id": ticket_id,
             "title": title,
+            "product_type": product_type,
+            "ubuntu_release": ubuntu_release,
             "status": "received",
             "created_at": now,
             "updated_at": now,

@@ -1,6 +1,7 @@
 import unittest
 from types import SimpleNamespace
-from unittest.mock import Mock
+import sys
+from unittest.mock import MagicMock, Mock, patch
 
 import requests
 
@@ -12,6 +13,57 @@ from src.ui_client import (
     get_requester_ticket,
     update_engineer_ticket,
 )
+
+
+class UiAnalysisRenderingTests(unittest.TestCase):
+    def test_render_result_displays_informational_answer_and_its_citation(self):
+        streamlit = MagicMock()
+        with patch.dict(sys.modules, {"streamlit": streamlit}):
+            import app as app_module
+
+        columns = [MagicMock() for _ in range(3)]
+        streamlit.columns.return_value = columns
+        result = {
+            "status": "needs_review",
+            "summary": "Review the sourced explanation.",
+            "answer": "The query checks whether the hostname resolves.",
+            "answer_citations": [{
+                "source_id": "OD1", "quote": "query HOSTNAME resolves domain names",
+            }],
+            "steps": [{
+                "instruction": "Query the hostname www.google.com to check if it resolves.",
+                "command": "resolvectl query www.google.com",
+                "citations": [{
+                    "source_id": "OD1",
+                    "quote": "query HOSTNAME resolves domain names",
+                }],
+            }], "sources": [{
+                "source_id": "OD1", "title": "Ubuntu manpage: resolvectl",
+                "source_type": "official_ubuntu_manpage",
+                "url": "https://manpages.ubuntu.com/resolvectl",
+            }],
+            "missing_information": [], "review_reasons": [],
+            "answer_validation": {"status": "needs_review", "issues": ["Check lexical support."]},
+            "step_validation": {"status": "passed", "issues": []},
+            "safety_assessment": {
+                "decision": "allow",
+                "apt_transaction": {"status": "absent", "kernel_removal_planned": False},
+                "recommendations": [],
+            },
+            "withheld_steps": [],
+        }
+
+        with patch.object(app_module, "st", streamlit):
+            app_module._render_result(result)
+
+        rendered = [call.args[0] for call in streamlit.markdown.call_args_list]
+        self.assertIn("The query checks whether the hostname resolves.", rendered)
+        streamlit.code.assert_called_once_with("resolvectl query www.google.com", language="bash")
+        self.assertTrue(any("query HOSTNAME resolves domain names" in item for item in rendered))
+        self.assertTrue(any("Draft answer" in item for item in rendered))
+        self.assertTrue(any("Answer validation:" in item for item in rendered))
+        self.assertTrue(any("Safety decision:" in item for item in rendered))
+        streamlit.expander.assert_called_with("Validation and safety details")
 
 
 class UiApiClientTests(unittest.TestCase):
@@ -33,6 +85,26 @@ class UiApiClientTests(unittest.TestCase):
             headers=None,
             timeout=180,
         )
+
+    def test_direct_analysis_can_send_environment_context(self):
+        session = Mock()
+        session.request.return_value = SimpleNamespace(
+            ok=True,
+            status_code=200,
+            json=lambda: {"status": "needs_review", "human_review": True},
+        )
+
+        analyze_ticket(
+            "http://localhost:8000", "DNS lookup fails", "Details",
+            product_type="ubuntu_server", ubuntu_release="22.04", session=session,
+        )
+
+        self.assertEqual(session.request.call_args.kwargs["json"], {
+            "title": "DNS lookup fails",
+            "description": "Details",
+            "product_type": "ubuntu_server",
+            "ubuntu_release": "22.04",
+        })
 
     def test_api_validation_message_is_presented_safely(self):
         session = Mock()
@@ -87,6 +159,30 @@ class UiApiClientTests(unittest.TestCase):
         self.assertEqual(status["status"], "received")
         self.assertEqual(session.request.call_args_list[1].args[1], "http://localhost:8000/api/v1/requester/status")
         self.assertEqual(session.request.call_args_list[1].kwargs["headers"], {"X-Ticket-Token": "private-token"})
+
+    def test_requester_submission_sends_environment_as_separate_optional_fields(self):
+        session = Mock()
+        session.request.return_value = SimpleNamespace(
+            ok=True,
+            status_code=201,
+            json=lambda: {"ticket_id": "RX-123", "tracking_token": "private-token"},
+        )
+
+        create_ticket(
+            "http://localhost:8000",
+            "Server package issue",
+            "Package installation fails.",
+            product_type="ubuntu_server",
+            ubuntu_release="24.04",
+            session=session,
+        )
+
+        self.assertEqual(session.request.call_args.kwargs["json"], {
+            "title": "Server package issue",
+            "description": "Package installation fails.",
+            "product_type": "ubuntu_server",
+            "ubuntu_release": "24.04",
+        })
 
     def test_requester_tracking_rejects_empty_private_code(self):
         session = Mock()

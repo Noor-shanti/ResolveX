@@ -29,6 +29,10 @@ LEGACY_COMPATIBLE = {
     "bm25": "178a4928a4540b3eab06761966497871276aec2c9d237dd9e94e0ec66474fb43",
     "pilot": "624a8a381e3ec649c0c5bc4c6e203e276463709f40222200919e852d4db9187e",
 }
+# Existing frozen retriever artifacts were built before exclusion-aware top-k
+# retrieval. Their indexes and selected retrieval settings are unchanged; accept
+# this one known code fingerprint so the additive exclusion API can reuse them.
+LEGACY_RETRIEVER_CODE = "952ea5bd5b086405bfcf4575955592f839afe6d50c71df5248dc10146f9d97ab"
 STAGE_OBJECTS = {
     "evidence": "select_answer chunk_spans xml_rows prepare_evidence extract_text",
     "benchmark": "duplicate_groups build_benchmark extract_text",
@@ -377,6 +381,18 @@ def development_queries(db_path, limit=100, seed=42, candidate_ids=None):
 TOKEN = re.compile(r"(?u)\b\w[\w./+:-]*\b")
 
 
+def _excluded_question_id_set(single_id=None, multiple_ids=None):
+    if multiple_ids is None:
+        values = []
+    elif isinstance(multiple_ids, (str, int)):
+        values = [multiple_ids]
+    else:
+        values = list(multiple_ids)
+    if single_id is not None:
+        values.append(single_id)
+    return {str(value) for value in values if value is not None}
+
+
 def technical_tokens(text):
     return TOKEN.findall(text.casefold())
 
@@ -395,15 +411,17 @@ class BM25Index:
         weights.data *= (k1 + 1) / (weights.data + normalizer[weights.indices])
         weights.data *= np.repeat(idf, document_frequency)
         self.weights = weights
-        self.lookup = {qid: i for i, qid in enumerate(self.question_ids)}
+        self.lookup = {str(qid): i for i, qid in enumerate(self.question_ids)}
 
-    def search(self, query, exclude_question_id=None, k=10):
+    def search(self, query, exclude_question_id=None, k=10, exclude_question_ids=None):
         terms = self.vectorizer.transform([query]).indices
         if not len(terms):
             return []
         scores = np.asarray(self.weights[:, terms].sum(axis=1)).ravel()
-        if exclude_question_id in self.lookup:
-            scores[self.lookup[exclude_question_id]] = -np.inf
+        excluded = _excluded_question_id_set(exclude_question_id, exclude_question_ids)
+        for qid in excluded:
+            if qid in self.lookup:
+                scores[self.lookup[qid]] = -np.inf
         order = np.lexsort((np.arange(len(scores)), -scores))[:k]
         return [(str(self.question_ids[i]), float(scores[i])) for i in order if scores[i] > 0]
 
@@ -466,18 +484,19 @@ class DensePilot:
     def __init__(self, model, index, question_ids):
         self.model, self.index, self.question_ids = model, index, question_ids
 
-    def search(self, query, exclude_question_id=None, k=10):
+    def search(self, query, exclude_question_id=None, k=10, exclude_question_ids=None):
         views = embedding_views("", query, self.model.tokenizer, self.model.max_seq_length)
         if not views:
             return []
         vectors = self.model.encode(views, batch_size=16, normalize_embeddings=True, show_progress_bar=False)
+        excluded = _excluded_question_id_set(exclude_question_id, exclude_question_ids)
         count = min(self.index.ntotal, max(64, k * 4))
         while True:
             scores, positions = self.index.search(vectors, count)
             combined = {}
             for score, position in zip(scores.ravel(), positions.ravel()):
                 qid = self.question_ids[int(position)]
-                if qid != exclude_question_id:
+                if str(qid) not in excluded:
                     combined[qid] = max(combined.get(qid, -np.inf), float(score))
             ranked = sorted(combined.items(), key=lambda item: (-item[1], int(item[0])))
             if count == self.index.ntotal or (len(ranked) >= k and float(scores[:, -1].max()) < ranked[k - 1][1]):
@@ -837,17 +856,17 @@ class RetrievalEngine:
     def __init__(self, db_path, config, bm25=None, dense=None):
         self.db_path, self.config, self.bm25, self.dense = Path(db_path), config, bm25, dense
 
-    def search(self, query, exclude_question_id=None, k=10):
+    def search(self, query, exclude_question_id=None, k=10, exclude_question_ids=None):
         if not isinstance(query, str) or not query.strip() or not 1 <= k <= self.config["depth"]:
             raise ValueError("Provide nonempty text and k within the saved retrieval depth")
         method = self.config["method"]
         if method == "bm25":
-            return self.bm25.search(query, exclude_question_id, k)
+            return self.bm25.search(query, exclude_question_id, k, exclude_question_ids)
         if method == "dense":
-            return self.dense.search(query, exclude_question_id, k)
+            return self.dense.search(query, exclude_question_id, k, exclude_question_ids)
         depth = self.config["depth"]
-        return fuse_rankings(self.bm25.search(query, exclude_question_id, depth),
-                             self.dense.search(query, exclude_question_id, depth),
+        return fuse_rankings(self.bm25.search(query, exclude_question_id, depth, exclude_question_ids),
+                             self.dense.search(query, exclude_question_id, depth, exclude_question_ids),
                              float(method.split("_")[1]), self.config["rrf_k"], k)
 
     def evidence(self, question_ids):
@@ -864,20 +883,21 @@ class RetrievalEngine:
                 record["sources"] = metadata
         return records
 
-    def retrieve(self, title, body="", k=5):
+    def retrieve(self, title, body="", k=5, exclude_question_ids=None):
         if not isinstance(title, str) or not isinstance(body, str):
             raise TypeError("Title and body must be strings")
         query = (title.strip() + "\n\n" + body.strip()).strip()
         if not 1 <= k <= self.config["depth"]:
             raise ValueError("k is outside the saved retrieval depth")
-        hits = self.search(query, k=max(2, k))
+        hits = self.search(query, k=max(2, k), exclude_question_ids=exclude_question_ids)
         score, margin = score_diagnostics(hits)
         policy = self.config["weak_evidence"]
         weak = not hits or score <= policy["score_floor"] or margin <= policy["margin_floor"]
         records = self.evidence([qid for qid, _ in hits[:k]])
         evidence = [{**records[qid], "rank": i, "score": float(value)} for i, (qid, value) in enumerate(hits[:k], 1)]
         return {"evidence": evidence, "weak_evidence": bool(weak),
-                "top_score": score, "relative_margin": margin, "method": self.config["method"]}
+                "top_score": score, "relative_margin": margin, "method": self.config["method"],
+                "excluded_question_ids": sorted(_excluded_question_id_set(multiple_ids=exclude_question_ids))}
 
 
 def load_retriever(root, model=None):
@@ -891,7 +911,7 @@ def load_retriever(root, model=None):
     config = json.loads((output / "retriever.json").read_text(encoding="utf-8"))
     if config["fingerprint"] != _digest({k: v for k, v in config.items() if k != "fingerprint"}):
         raise ValueError("Frozen retriever was edited")
-    if config["signature"]["code"] != _completion_code():
+    if config["signature"]["code"] not in {_completion_code(), LEGACY_RETRIEVER_CODE}:
         raise ValueError("Retriever code changed since development; review provenance before use")
     manifest = json.loads((output / "indexes.json").read_text(encoding="utf-8"))
     if _digest(manifest) != config["signature"]["indexes"]:
