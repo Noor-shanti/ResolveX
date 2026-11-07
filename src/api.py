@@ -269,12 +269,14 @@ def _adapt_agent_response(raw: dict[str, Any]) -> AnalysisResponse:
 def create_app(
     services_loader: Callable[[Path], ApiServices] = _load_api_services,
     root: Path = PROJECT_ROOT,
+    ticket_database_path: Path | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         resolved_root = Path(root).resolve()
         app.state.services = services_loader(resolved_root)
-        app.state.ticket_store = TicketStore(resolved_root / "data/processed/support_tickets.sqlite3")
+        database_path = ticket_database_path or resolved_root / "data/processed/support_tickets.sqlite3"
+        app.state.ticket_store = TicketStore(database_path)
         yield
         app.state.services = None
         app.state.ticket_store = None

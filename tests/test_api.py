@@ -106,6 +106,22 @@ def _client(agent=True, agent_instance=None):
 
 
 class ApiTests(unittest.TestCase):
+    def test_app_can_use_an_isolated_ticket_database(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            isolated_database = root / "benchmark" / "tickets.sqlite3"
+            app = create_app(
+                lambda _root: _services(),
+                root=root,
+                ticket_database_path=isolated_database,
+            )
+            with TestClient(app) as client:
+                response = client.post("/api/v1/tickets", json={"title": "Isolated benchmark ticket"})
+
+            self.assertEqual(response.status_code, 201)
+            self.assertTrue(isolated_database.is_file())
+            self.assertFalse((root / "data/processed/support_tickets.sqlite3").exists())
+
     def test_components_load_once_and_classification_returns_contract(self):
         calls = []
         with tempfile.TemporaryDirectory() as temp_dir:

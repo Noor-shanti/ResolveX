@@ -165,6 +165,21 @@ def _render_result(result: dict) -> None:
         unsafe_allow_html=True,
     )
 
+    reasons = result.get("review_reasons") or []
+    error_str = str(result.get("error") or "")
+    is_transient_error = (
+        any("503" in str(r) or "UNAVAILABLE" in str(r) or "high demand" in str(r).lower() for r in reasons)
+        or ("503" in error_str)
+        or ("UNAVAILABLE" in error_str)
+        or ("high demand" in error_str.lower())
+    )
+    if is_transient_error:
+        st.warning(
+            "⚠️ **AI Service Busy (High Traffic)** — Google Gemini is experiencing a brief surge in traffic. "
+            "Relevant documentation and evidence sources were retrieved below. "
+            "Please click **Re-analyze request** in a few seconds to retry generation."
+        )
+
     left, right, third = st.columns([1.2, 1, 1])
     category = result.get("category") or "Not assigned"
     confidence = result.get("confidence")
@@ -214,17 +229,32 @@ def _render_result(result: dict) -> None:
     reasons = result.get("review_reasons") or []
     if missing or reasons:
         st.markdown("### What needs checking")
-        note_cols = st.columns(2)
-        if missing:
-            with note_cols[0]:
-                st.markdown("**Details still needed**")
-                for item in missing:
-                    st.markdown(f"- {_safe(item)}")
-        if reasons:
-            with note_cols[1]:
-                st.markdown("**Why this needs review**")
-                for item in reasons:
-                    st.markdown(f"- {_safe(item)}")
+        def _render_missing_items(target_container):
+            target_container.markdown("**Details still needed**")
+            for item in missing:
+                target_container.markdown(f"- {_safe(item)}")
+
+        def _render_reason_items(target_container):
+            target_container.markdown("**Why this needs review**")
+            for item in reasons:
+                item_str = str(item)
+                if (
+                    "503" in item_str
+                    or "UNAVAILABLE" in item_str
+                    or "high demand" in item_str.lower()
+                ):
+                    target_container.markdown("- *AI service temporarily busy (Google 503 spike) — retry available.*")
+                else:
+                    target_container.markdown(f"- {_safe(item)}")
+
+        if missing and reasons:
+            note_cols = st.columns(2)
+            _render_missing_items(note_cols[0])
+            _render_reason_items(note_cols[1])
+        elif missing:
+            _render_missing_items(st)
+        else:
+            _render_reason_items(st)
 
     safety = result.get("safety_assessment") or {}
     withheld_steps = result.get("withheld_steps") or []
@@ -249,19 +279,29 @@ def _render_result(result: dict) -> None:
     st.markdown("### Information used")
     if not sources:
         st.caption("No supporting links were available for this review.")
-    for source in sources:
-        label, css = _source_type(source)
-        title = _safe(source.get("title") or "Untitled source")
-        source_id = _safe(source.get("source_id") or "")
-        url = str(source.get("url") or "")
-        safe_url = _safe(url) if url.startswith(("https://", "http://")) else ""
-        release = source.get("release_scope")
-        release_line = f'<div class="source-id">Release scope: {_safe(release)}</div>' if release else ""
-        link = f'<a class="source-link" href="{safe_url}" target="_blank" rel="noopener noreferrer">Open source ↗</a>' if safe_url else "<span class=\"source-id\">Source link unavailable</span>"
-        st.markdown(
-            f'<div class="source-card"><div class="source-top"><span class="source-type {css}">{_safe(label)}</span><span class="source-id">{source_id}</span></div><div class="source-title">{title}</div>{release_line}{link}</div>',
-            unsafe_allow_html=True,
-        )
+    else:
+        def _render_source_card(source_item: dict) -> None:
+            label, css = _source_type(source_item)
+            title = _safe(source_item.get("title") or "Untitled source")
+            source_id = _safe(source_item.get("source_id") or "")
+            url = str(source_item.get("url") or "")
+            safe_url = _safe(url) if url.startswith(("https://", "http://")) else ""
+            release = source_item.get("release_scope")
+            release_line = f'<div class="source-id">Release scope: {_safe(release)}</div>' if release else ""
+            link = f'<a class="source-link" href="{safe_url}" target="_blank" rel="noopener noreferrer">Open source ↗</a>' if safe_url else "<span class=\"source-id\">Source link unavailable</span>"
+            st.markdown(
+                f'<div class="source-card"><div class="source-top"><span class="source-type {css}">{_safe(label)}</span><span class="source-id">{source_id}</span></div><div class="source-title">{title}</div>{release_line}{link}</div>',
+                unsafe_allow_html=True,
+            )
+
+        top_sources = sources[:3]
+        extra_sources = sources[3:]
+        for src in top_sources:
+            _render_source_card(src)
+        if extra_sources:
+            with st.expander(f"View {len(extra_sources)} additional retrieved references"):
+                for src in extra_sources:
+                    _render_source_card(src)
 
     st.markdown('<div class="footer-note">Suggestions should be checked by the support team before they are shared or acted on.</div>', unsafe_allow_html=True)
 
@@ -494,11 +534,20 @@ def _engineer_workspace(api_base: str) -> None:
         return
 
     by_id = {ticket["ticket_id"]: ticket for ticket in queue}
+    ticket_ids = list(by_id)
+
+    # Keep user selection sticky across reruns and status changes
+    current_selected = st.session_state.get("selected_ticket_id")
+    default_idx = ticket_ids.index(current_selected) if current_selected in ticket_ids else 0
+
     selected_id = st.selectbox(
         f"Requests ({len(queue)})",
-        list(by_id),
+        ticket_ids,
+        index=default_idx,
         format_func=lambda ticket_id: f"{by_id[ticket_id]['title']} · {_status_label(by_id[ticket_id]['status'])}",
+        key="ticket_selector_box",
     )
+    st.session_state["selected_ticket_id"] = selected_id
     ticket = by_id[selected_id]
     status_style = {
         "received": "received",
@@ -524,10 +573,21 @@ def _engineer_workspace(api_base: str) -> None:
 
     with st.container(border=True):
         st.markdown('<div class="support-section-heading analysis"><span class="section-dot"></span><span class="section-copy"><small>SUPPORTING EVIDENCE</small><strong>ResolveX analysis</strong></span></div>', unsafe_allow_html=True)
-        if st.button("Analyze request", type="primary", use_container_width=True):
+        button_label = "Re-analyze request" if ticket.get("analysis") else "Analyze request"
+        btn_placeholder = st.empty()
+        analyze_clicked = btn_placeholder.button(
+            button_label,
+            type="primary",
+            use_container_width=True,
+            key=f"analyze_btn_{selected_id}",
+        )
+        if analyze_clicked:
+            st.session_state["selected_ticket_id"] = selected_id
+            btn_placeholder.info("⏳ Analysis in progress... Connecting to Gemini & Vector Store. Please wait a moment...")
             try:
-                with st.spinner("Checking the request and its sources…"):
+                with st.spinner("Analyzing ticket..."):
                     analyze_engineer_ticket(api_base, selected_id)
+                st.toast("Analysis completed successfully!")
                 st.rerun()
             except ApiRequestError as exc:
                 st.error(str(exc))

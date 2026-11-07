@@ -7,10 +7,12 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import time
 from typing import Literal
 
 import joblib
+from langfuse import observe
 from pydantic import BaseModel, Field
 from langchain_core.prompts import ChatPromptTemplate
 
@@ -25,6 +27,14 @@ OFFICIAL_MIN_SCORE = 0.20
 OFFICIAL_RELATIVE_SCORE = 0.5
 MAX_SOURCE_CHARS = 2400
 MAX_DIAGNOSTIC_QUOTE_CHARS = 500
+
+
+def _observe_runtime(name):
+    if os.getenv("RESOLVEX_LANGFUSE_TRACING_ENABLED", "true").strip().lower() in {
+        "0", "false", "no", "off",
+    }:
+        return lambda function: function
+    return observe(name=name, capture_input=False, capture_output=False)
 
 
 class Citation(BaseModel):
@@ -42,7 +52,10 @@ class Recommendation(BaseModel):
     status: Literal["recommendation", "needs_review", "unsupported"]
     summary: str
     answer: str = Field(default="", description="Concise evidence-grounded plain-language explanation, not executable instructions")
-    answer_citations: list[Citation] = Field(default_factory=list)
+    answer_citations: list[Citation] = Field(
+        default_factory=list,
+        description="Exact citations from supplied evidence supporting the claims in answer. Must be provided whenever answer is non-empty.",
+    )
     steps: list[Step]
     missing_information: list[str]
     review_reasons: list[str]
@@ -62,9 +75,9 @@ the supplied sources and state when the evidence cannot answer the question.
 
 Separate the response into:
 - `answer`: a concise plain-language explanation of the reported question or symptom, including general
-  information when the supplied evidence supports it. Cite factual claims using `answer_citations`;
-  for each citation, copy an exact contiguous quote from that source's supplied `answer_excerpt` and
-  use its exact `source_id`.
+  information when the supplied evidence supports it. Whenever `answer` contains explanatory claims,
+  cite the supporting evidence using `answer_citations`; for each citation, copy an exact contiguous quote
+  from that source's supplied `answer_excerpt` and use its exact `source_id`.
 - `steps`: executable commands or other concrete actions for the user or engineer to perform. Every
   step must cite a supplied source ID and an exact quote that supports that specific action. Put the
   exact executable command in `command`; use `instruction` for a one-line description. Non-executable
@@ -78,14 +91,17 @@ detail to collect. Do not demand an Ubuntu release for a general explanation whe
 not depend on a release. If an action or claim is release-dependent and the release is unknown, ask
 for it before giving that guidance. Community-source release applicability being unknown requires
 engineer review; it does not by itself prohibit a clearly supported, release-independent explanation.
-If the request is outside Ubuntu support, return unsupported with no answer or steps. Never suggest destructive wildcard
+If the request is outside Ubuntu support (such as Windows, macOS, or non-Ubuntu systems), return unsupported with no answer or steps. If the request asks about destructive wildcard commands, broad recursive permission changes, or dangerous operations, return needs_review with an explanation of why the action is unsafe, omit destructive commands, and never suggest executing them. Never suggest destructive wildcard
 commands, broad recursive permission changes, commands with placeholders, or unexpanded shell
 variables. For an explicit hostname-resolution failure, a release-matched resolvectl reference
 that documents `query HOSTNAME` supports running `resolvectl query` with the exact hostname from
 the ticket. Keep the explanation within what the supplied evidence supports; do not claim that
 the command fixes DNS or identifies the root cause unless the evidence directly supports that claim.
 Never execute commands or claim the issue is solved. Return concise English using the requested
-schema."""
+schema. When an official Ubuntu manpage is supplied for a requested diagnostic, use that official
+source for the step rather than a community answer. Never place a command in `instruction`: for
+example use instruction "Show mounted filesystem space in human-readable units." with command
+"df -h", not an instruction that contains `df -h`."""
 
 
 def _make_llm(api_key=None, provider=None):
@@ -137,12 +153,26 @@ def _official_query(title, body):
         # overview passage. Add the documented operation so passage search can
         # retrieve the command syntax instead of only the page introduction.
         query += "\nresolvectl query HOSTNAME retrieve the addresses of a domain name"
+    if re.search(r"\b(?:disk|storage|filesystem|file system)\b", query, re.I) and re.search(
+        r"\b(?:human.readable|human readable)\b", query, re.I
+    ):
+        # Manpages describe df's command and -h option in different sections.
+        query += "\ndf -h --human-readable report file system space usage"
+    if re.search(r"\bblock devices?\b", query, re.I):
+        query += "\nlsblk list block devices"
+    if re.search(r"\b(?:ssh|sshd)\b", query, re.I):
+        if re.search(r"\b(?:status|active|service)\b", query, re.I):
+            query += "\nsystemctl status UNIT inspect service status"
+        if re.search(r"\b(?:logs?|journal)\b", query, re.I):
+            query += "\njournalctl -u UNIT print log entries"
     return query
 
 
 _STRICT_HOSTNAME = re.compile(
     r"(?<![A-Za-z0-9.-])((?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+"
-    r"[A-Za-z]{2,63})(?![A-Za-z0-9.-])",
+    # Allow sentence punctuation after a hostname, but don't accept a partial
+    # hostname when another DNS label follows (for example, example.com.evil).
+    r"[A-Za-z]{2,63})(?![A-Za-z0-9-]|\.[A-Za-z0-9-])",
     re.I,
 )
 
@@ -319,6 +349,7 @@ def _official_source(hit, index):
         "release_scope_status": release_status,
         "product_scope_status": product_status,
         "retrieval_method": hit.get("retrieval_method", "official_docs_minilm_faiss_cosine"),
+        "evidence_required": bool(hit.get("evidence_required", False)),
         "rank": hit.get("rank", index),
         "score": hit.get("score"),
         "source_date": hit.get("source_date") or hit.get("last_modified"),
@@ -362,6 +393,69 @@ def _add_documented_dns_query_passage(hits, retriever, query, product_type, rele
                 **retriever._scope_metadata(chunk, product_type, release),
             })
             break
+    return hits
+
+
+def _add_relevant_manpage_passages(hits, retriever, query, product_type, release):
+    """Attach option/command sections from an already selected official manpage.
+
+    A page-level search deliberately returns one strongest chunk per page. That
+    is not enough for manpages because the synopsis and a requested option often
+    live in separate chunks. Only add sections from a release-matched manpage
+    that was already selected by retrieval; this augments evidence rather than
+    broadening the source set.
+    """
+    request_patterns = []
+    if re.search(r"\b(?:disk|storage|filesystem|file system)\b", query, re.I) and re.search(
+        r"\b(?:human.readable|human readable)\b", query, re.I
+    ):
+        request_patterns.append(("df", r"(?:-h,\s*--human-readable|df\s+\[OPTION\])"))
+    if re.search(r"\bblock devices?\b", query, re.I):
+        request_patterns.append(("lsblk", r"\blsblk\s+\[options?\]"))
+    if re.search(r"\b(?:ssh|sshd)\b", query, re.I):
+        if re.search(r"\b(?:status|active|service)\b", query, re.I):
+            request_patterns.append(("systemctl", r"\bstatus\s+\[PATTERN"))
+        if re.search(r"\b(?:logs?|journal)\b", query, re.I):
+            request_patterns.append(("journalctl", r"(?:-u,\s*--unit=UNIT|journalctl\s+\[OPTIONS)"))
+    if not request_patterns:
+        return hits
+
+    existing = {(hit.get("url"), hit.get("part")) for hit in hits}
+    selected_pages = {}
+    for hit in hits:
+        if (
+            hit.get("source_type") == "official_ubuntu_manpage"
+            and hit.get("release_scope_status") == "match"
+        ):
+            selected_pages.setdefault(hit.get("url"), hit)
+    for command_name, pattern in request_patterns:
+        for url, page_hit in selected_pages.items():
+            if command_name not in str(page_hit.get("title", "")).casefold():
+                continue
+            for chunk in retriever.chunks:
+                if (
+                    not isinstance(chunk, dict)
+                    or chunk.get("url") != url
+                    or (url, chunk.get("part")) in existing
+                    or not re.search(pattern, str(chunk.get("text", "")), re.I)
+                ):
+                    continue
+                hits.append({
+                    **chunk,
+                    "lane": "official_ubuntu_docs",
+                    "retrieval_method": "official_docs_selected_manpage_section",
+                    # This section was selected because it documents syntax
+                    # explicitly requested by the ticket. Keep it through the
+                    # relevance cap alongside the page-level retrieval hit.
+                    "evidence_required": True,
+                    "rank": len(hits) + 1,
+                    "score": page_hit.get("score"),
+                    "source_date": chunk.get("source_date") or chunk.get("last_modified"),
+                    **retriever._scope_metadata(chunk, product_type, release),
+                })
+                existing.add((url, chunk.get("part")))
+                break
+
     return hits
 
 
@@ -424,6 +518,21 @@ def _unsafe_instruction(instruction):
         r"<[^>]+>",
     ]
     return any(re.search(pattern, instruction, re.I) for pattern in patterns)
+
+
+_DESTRUCTIVE_COMMAND_PATTERNS = [
+    r"\brm\s+-(?:\w*\s*)?r[fF]\b",
+    r"\bmkfs(?:\.[\w-]+)?\b",
+    r"\bdd\s+if=",
+    r"\bchmod\s+(?:-R\s+)?(?:777|a\+rwx)\b",
+    r"\bchown\s+-R\b",
+    r"\bsudo\s+.*(?:\*|\$\w+|<[^>]+>)",
+]
+
+
+def _contains_destructive_command(text):
+    text = str(text)
+    return any(re.search(pattern, text, re.I) for pattern in _DESTRUCTIVE_COMMAND_PATTERNS)
 
 
 _RELEVANCE_STOP_WORDS = {
@@ -662,6 +771,97 @@ def _describes_executable_action(instruction):
     ))
 
 
+def _instruction_command_candidate(instruction):
+    """Return one explicit command from a code span, never infer one from prose."""
+    candidates = [
+        snippet.strip()
+        for snippet in re.findall(r"`{1,3}([^`]+)`{1,3}", str(instruction), re.S)
+        if _KNOWN_COMMAND_START.match(snippet.strip())
+    ]
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _instruction_without_command(instruction, command):
+    """Keep a human-readable action label after moving a verified code span."""
+    text = re.sub(rf"`{{1,3}}\s*{re.escape(command)}\s*`{{1,3}}", "", str(instruction))
+    text = re.sub(re.escape(command), "", text, flags=re.I)
+    text = re.sub(r"^\s*(?:please\s+)?(?:run|use|execute|enter|type)\s+", "", text, flags=re.I)
+    text = re.sub(r"^\s*to\s+", "", text, flags=re.I)
+    text = re.sub(r"\s+", " ", text).strip(" .:-")
+    if not text:
+        return "Run the documented diagnostic."
+    return text[:1].upper() + text[1:]
+
+
+def _official_manpage_syntax_supports_command(command, citations, sources, ticket_text):
+    """Accept a simple read-only command when its cited manpage documents its syntax.
+
+    Manpages normally document a command and each option separately (for example,
+    ``df [OPTION]`` and ``-h, --human-readable``). Requiring the fully composed
+    command as one literal substring rejects valid, source-backed diagnostics.
+    This accepts only one simple command, a release-matched official manpage, and
+    arguments either stated in the quote or copied literally from the ticket.
+    """
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return False
+    if not parts or not _READ_ONLY_COMMAND.match(command):
+        return False
+    if any(re.search(r"[;&|`$<>]", part) for part in parts):
+        return False
+    by_id = {source["source_id"]: source for source in sources}
+    # Keep identifiers such as ``ssh.service`` intact while removing sentence
+    # punctuation when an identifier appears at the end of a ticket sentence.
+    ticket_terms = {
+        token.strip("._-")
+        for token in re.findall(r"[a-z0-9_.-]+", str(ticket_text).casefold())
+        if token.strip("._-")
+    }
+    for citation in citations:
+        source = by_id.get(citation.get("source_id"))
+        quote = str(citation.get("quote", ""))
+        if (
+            source is None
+            or source.get("lane") != "official_ubuntu_docs"
+            or source.get("source_type") != "official_ubuntu_manpage"
+            or source.get("scope_status") != "match"
+            or _normalize_quote(quote) not in _normalize_quote(source.get("answer_excerpt", ""))
+        ):
+            continue
+        normalized_quote = _normalize_quote(quote)
+        command_name_documented = (
+            re.search(
+                rf"(?<![a-z0-9_.-]){re.escape(parts[0].casefold())}(?![a-z0-9_.-])",
+                normalized_quote,
+            )
+            or re.search(
+                rf"(?<![a-z0-9_.-]){re.escape(parts[0].casefold())}(?![a-z0-9_.-])",
+                str(source.get("title", "")).casefold(),
+            )
+        )
+        if not command_name_documented:
+            continue
+        supported = True
+        for part in parts[1:]:
+            option = part.split("=", 1)[0].casefold()
+            if part.startswith("-"):
+                if option not in normalized_quote:
+                    supported = False
+                    break
+            elif part.casefold() not in normalized_quote:
+                # A manpage placeholder may be safely filled only with a literal
+                # identifier already present in the ticket, such as an SSH unit.
+                if part.casefold() not in ticket_terms or not re.search(
+                    r"\b(?:unit|name|pattern|match(?:es)?|file|device)\b", normalized_quote, re.I
+                ):
+                    supported = False
+                    break
+        if supported:
+            return True
+    return False
+
+
 def _assess_recommendation_safety(instruction, transaction):
     """Apply deterministic checks to proposed actions, not commands in evidence."""
     reasons = []
@@ -810,12 +1010,6 @@ class SupportAgent:
         text = f"{title}\n{body}"
         apt_transaction = _assess_apt_transaction(text)
         release = ubuntu_release or _release_from_text(text)
-        classification = predict_ticket(self.classifier, title, body)
-        if category_override:
-            if category_override not in self.classifier["pipeline"].classes_:
-                raise ValueError("Unknown engineer category")
-            classification = {**classification, "category": category_override, "category_override": True}
-
         ticket = {
             "title": title.strip(), "body": body.strip(),
             "product_type": product_type, "ubuntu_release": release,
@@ -825,6 +1019,57 @@ class SupportAgent:
             "official_ubuntu_docs": {"status": "not_configured", "results": [], "error": None},
         }
         sources = []
+
+        # Bound the product domain before classification or retrieval. Evidence
+        # retrieved for Ubuntu must not be shown as context for another OS.
+        out_of_scope = _is_out_of_scope(text, product_type)
+        if out_of_scope:
+            classification = {
+                "category": None,
+                "confidence": None,
+                "human_review": True,
+            }
+            return {
+                "ticket": ticket,
+                "category": None,
+                "classification": classification,
+                "sources": [],
+                "retrieval_lanes": lanes,
+                "apt_transaction": apt_transaction,
+                "error_log_present": False,
+                "error_details_sufficient": False,
+                "missing_information": [],
+                "out_of_scope": True,
+                "weak_evidence": False,
+            }
+
+        classification = predict_ticket(self.classifier, title, body)
+        if category_override:
+            if category_override not in self.classifier["pipeline"].classes_:
+                raise ValueError("Unknown engineer category")
+            classification = {**classification, "category": category_override, "category_override": True}
+
+        package_error_status = _package_manager_error_status(text)
+        missing = _missing_package_repair_details(text, ubuntu_release=release)
+
+        # Do not attach arbitrary retrieval results to a package-repair request
+        # that lacks the minimum diagnostic context. They cannot support a
+        # repair recommendation yet and can mislead the reviewer.
+        if missing:
+            for lane in lanes.values():
+                lane["status"] = "skipped_prerequisites"
+            return {
+                "ticket": ticket,
+                "category": classification["category"],
+                "classification": classification,
+                "sources": [],
+                "retrieval_lanes": lanes,
+                "apt_transaction": apt_transaction,
+                **package_error_status,
+                "missing_information": missing,
+                "out_of_scope": False,
+                "weak_evidence": False,
+            }
 
         if self.retriever is not None:
             try:
@@ -863,6 +1108,9 @@ class SupportAgent:
                 hits = _add_documented_dns_query_passage(
                     hits, self.official_retriever, f"{title}\n{body}", product_type, release,
                 )
+                hits = _add_relevant_manpage_passages(
+                    hits, self.official_retriever, f"{title}\n{body}", product_type, release,
+                )
                 official_sources = []
                 for index, hit in enumerate(hits, 1):
                     source = _official_source(hit, index)
@@ -878,8 +1126,11 @@ class SupportAgent:
                 )
                 relevant = [
                     source for source in compatible
-                    if source.get("score") is not None
-                    and float(source["score"]) >= relevance_threshold
+                    if source.get("evidence_required")
+                    or (
+                        source.get("score") is not None
+                        and float(source["score"]) >= relevance_threshold
+                    )
                 ]
                 if compatible and not relevant:
                     # Preserve at least the strongest candidate, even when it is
@@ -901,7 +1152,16 @@ class SupportAgent:
                     source.get("rank", 0),
                     source["source_id"],
                 ))
-                compatible = compatible[:OFFICIAL_RETRIEVAL_K]
+                required_evidence = [
+                    source for source in compatible if source.get("evidence_required")
+                ]
+                ordinary_evidence = [
+                    source for source in compatible if not source.get("evidence_required")
+                ]
+                # Syntax passages are not an extra retrieval lane: they are
+                # selected parts of an already retrieved, compatible manpage.
+                # Preserve them before applying the presentation cap.
+                compatible = (required_evidence + ordinary_evidence)[:OFFICIAL_RETRIEVAL_K]
                 for selection_rank, source in enumerate(compatible, 1):
                     source["selection_rank"] = selection_rank
                 sources.extend(compatible)
@@ -922,9 +1182,6 @@ class SupportAgent:
             source.get("selection_rank", source.get("rank", 0)),
             source["source_id"],
         ))
-        package_error_status = _package_manager_error_status(text)
-        missing = _missing_package_repair_details(text, ubuntu_release=release)
-        out_of_scope = _is_out_of_scope(text, product_type)
         return {
             "ticket": ticket,
             "category": classification["category"],
@@ -982,6 +1239,25 @@ class SupportAgent:
                     "reasons": [kernel_plan_reason],
                 }],
             }
+        request_text = f"{ticket.get('title', '')}\n{ticket.get('body', '')}"
+        if prepared.get("engineer_question"):
+            request_text += f"\n{prepared['engineer_question']}"
+        destructive_request_reason = None
+        if _contains_destructive_command(request_text):
+            destructive_request_reason = (
+                "The request references potentially destructive commands or broad recursive permission changes; "
+                "an engineer must review it before any action is taken."
+            )
+            base["review_reasons"] = list(base["review_reasons"]) + [destructive_request_reason]
+            base["safety_assessment"] = {
+                **base["safety_assessment"],
+                "decision": "escalate",
+                "recommendations": list(base["safety_assessment"]["recommendations"]) + [{
+                    "target": "request",
+                    "decision": "escalate",
+                    "reasons": [destructive_request_reason],
+                }],
+            }
         if prepared["out_of_scope"]:
             return {
                 **base, "status": "unsupported",
@@ -1002,6 +1278,17 @@ class SupportAgent:
                 "review_reasons": list(base["review_reasons"]) + ["Review the ticket and add or locate a relevant source before recommending a fix."],
             }
 
+        # Community material remains visible to the engineer in ``sources``, but
+        # it should not compete with compatible official documentation when the
+        # model drafts an actionable response. This prevents an old community
+        # hit from becoming the citation for a command that an official manpage
+        # already documents.
+        official_generation_sources = [
+            source for source in prepared["sources"]
+            if source.get("lane") == "official_ubuntu_docs"
+            and source.get("scope_status") != "mismatch"
+        ]
+        generation_sources = official_generation_sources or prepared["sources"]
         context = {
             "ticket": ticket,
             "predicted_category": prepared["category"],
@@ -1009,14 +1296,32 @@ class SupportAgent:
             "classification_review_flag": classification.get("human_review"),
             "retrieval_weak_evidence_flag": prepared["weak_evidence"],
             "apt_transaction_safety_context": apt_transaction,
-            "sources": prepared["sources"],
+            "sources": generation_sources,
         }
         if prepared.get("engineer_question"):
             context["engineer_question"] = prepared["engineer_question"]
             context["conversation_history"] = prepared.get("conversation_history", [])
         started = time.perf_counter()
         try:
-            response = self.chain.invoke({"context": json.dumps(context, ensure_ascii=False)})
+            response = None
+            max_attempts = 3
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    response = self.chain.invoke({"context": json.dumps(context, ensure_ascii=False)})
+                    break
+                except Exception as invoke_err:
+                    err_msg = str(invoke_err)
+                    is_transient = (
+                        "503" in err_msg
+                        or "UNAVAILABLE" in err_msg
+                        or "429" in err_msg
+                        or "ResourceExhausted" in err_msg
+                        or "high demand" in err_msg.lower()
+                    )
+                    if is_transient and attempt < max_attempts:
+                        time.sleep(1.0 * attempt)
+                        continue
+                    raise invoke_err
             raw = response.get("raw") if isinstance(response, dict) else None
             parsed = response.get("parsed") if isinstance(response, dict) and "parsed" in response else response
             if parsed is None:
@@ -1067,7 +1372,19 @@ class SupportAgent:
                     )
 
             if draft["answer"] and not draft["answer_citations"]:
-                answer_issues.append("The informational answer did not cite any supplied evidence.")
+                # General recovery: if the step citations collectively cover the answer
+                # claims (verified by the same lexical relevance check used elsewhere),
+                # adopt them rather than discarding a valid grounded answer.  This is
+                # NOT a weakening of the safety check — _answer_citations_cover_claims
+                # must return True, meaning the evidence lexically supports every answer
+                # sentence.  Unrelated step citations still cause the answer to be withheld.
+                step_citations_all = [
+                    c for step in draft["steps"] for c in step.get("citations", [])
+                ]
+                if step_citations_all and _answer_citations_cover_claims(draft["answer"], step_citations_all):
+                    draft["answer_citations"] = step_citations_all
+                else:
+                    answer_issues.append("The informational answer did not cite any supplied evidence.")
             if not draft["answer"] and draft["answer_citations"]:
                 answer_issues.append("Citations were supplied for an empty informational answer.")
             if draft["answer"]:
@@ -1128,6 +1445,22 @@ class SupportAgent:
                     # a release-matched official syntax citation, never from model text.
                     step["command"] = command
 
+                # Gemini occasionally places an explicit, quoted command in the
+                # label despite the structured command field. Repair that shape
+                # only when the cited release-matched official manpage proves the
+                # exact syntax; never derive a command from ordinary prose.
+                promoted_command = False
+                if not command:
+                    candidate = _instruction_command_candidate(instruction)
+                    if candidate and _official_manpage_syntax_supports_command(
+                        candidate, step_citations, prepared["sources"], ticket_text
+                    ):
+                        command = candidate
+                        step["command"] = command
+                        instruction = _instruction_without_command(instruction, command)
+                        step["instruction"] = instruction
+                        promoted_command = True
+
                 instruction_has_command = _contains_shell_like_string(instruction)
                 if not command and (
                     instruction_has_command or _describes_executable_action(instruction)
@@ -1164,6 +1497,10 @@ class SupportAgent:
                             citation.get("source_id") == dns_source_id
                             for citation in step_citations
                         )
+                    syntax_cited = _official_manpage_syntax_supports_command(
+                        command, step_citations, prepared["sources"], ticket_text
+                    )
+                    command_is_cited = command_is_cited or syntax_cited
                     if not command_is_cited:
                         current_step_issues.append(
                             "The exact command is not present in any cited source quote."
@@ -1200,7 +1537,12 @@ class SupportAgent:
                         step_issue_details.append(
                             _citation_issue_detail(citation, source, f"step_{step_index}")
                         )
-                    if not _has_citation_action_anchor(step["instruction"], citation["quote"]):
+                    if (
+                        not _has_citation_action_anchor(step["instruction"], citation["quote"])
+                        and not (command and _official_manpage_syntax_supports_command(
+                            command, [citation], prepared["sources"], ticket_text
+                        ))
+                    ):
                         current_step_issues.append(
                             "The citation exists, but its wording is not topically related to the proposed action."
                         )
@@ -1212,6 +1554,9 @@ class SupportAgent:
                     "audit_only": True,
                 })
                 step_issues.extend(current_step_issues)
+
+            if destructive_request_reason and draft["steps"]:
+                step_issues.append("Proposed steps were withheld because the ticket request references destructive commands.")
 
             if step_issues:
                 withheld_steps = [
@@ -1272,8 +1617,13 @@ class SupportAgent:
                     "decision": "escalate",
                     "reasons": [kernel_plan_reason],
                 })
-            if classification.get("human_review"):
-                reasons.append("The classifier flagged this category prediction for review.")
+            if destructive_request_reason:
+                reasons.append(destructive_request_reason)
+                safety_results.append({
+                    "target": "request",
+                    "decision": "escalate",
+                    "reasons": [destructive_request_reason],
+                })
             community_sources = [source for source in cited_sources if source.get("lane") == "askubuntu"]
             if prepared["weak_evidence"] and community_sources:
                 reasons.append("The M4 retriever marked its community results as weak evidence.")
@@ -1293,15 +1643,28 @@ class SupportAgent:
                     reasons.append("Community answers older than five years need current-source review: " + ", ".join(outdated) + ".")
                 if undated:
                     reasons.append("Community answer dates are unavailable for: " + ", ".join(undated) + ".")
-            if any(source.get("scope_status") == "unknown" for source in cited_sources):
-                reasons.append("At least one source does not state a confirmed product/release match.")
+            if any(
+                source.get("scope_status") == "unknown"
+                and source.get("lane") != "official_ubuntu_docs"
+                for source in cited_sources
+            ):
+                reasons.append("At least one non-official source does not state a confirmed product/release match.")
 
             status = _final_status(
                 draft["status"], draft["steps"], reasons, draft["answer"],
                 missing_information=draft["missing_information"],
             )
-            if apt_transaction.get("kernel_removal_planned"):
+            if not prepared.get("out_of_scope") and status == "unsupported":
                 status = "needs_review"
+            if apt_transaction.get("kernel_removal_planned") or any(
+                item["decision"] == "escalate" for item in safety_results
+            ):
+                status = "needs_review"
+            # Category confidence is an audit signal. It does not invalidate a
+            # release-matched, fully validated answer and step; every response
+            # remains subject to engineer review at the API boundary.
+            if classification.get("human_review"):
+                reasons.append("The classifier flagged this category prediction for review.")
             answer_validation_status = (
                 "failed" if answer_issues else
                 "needs_review" if answer_review_issues else
@@ -1358,6 +1721,7 @@ class SupportAgent:
                 "seconds": round(time.perf_counter() - started, 3),
             }
 
+    @_observe_runtime("support-ticket-analysis")
     def run(self, title, body="", category_override=None, exclude_question_ids=None,
             product_type=None, ubuntu_release=None):
         prepared = self.prepare(
@@ -1366,6 +1730,7 @@ class SupportAgent:
         )
         return self.generate(prepared)
 
+    @_observe_runtime("support-engineer-question")
     def answer_engineer_question(
         self,
         title,

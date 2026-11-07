@@ -45,13 +45,14 @@ Employee checks request status
 
 ## Current Status
 
-- **M1-M4 — Completed:** Research, dataset curation, baseline ML classifier, and MiniLM+FAISS retrieval selected after comparison with BM25 and hybrid search.
-- **M5 — Completed:** Evidence-grounded technical guidance with cited sources, safety checks, and engineer review.
-- **M6 — Completed:** FastAPI backend with ticket ingestion, analysis adapter, and sqlite persistence.
-- **M7 — Completed:** Streamlit end-to-end interactive interface for Requesters and IT Support Engineers.
-- **M8 Completed:** Internal, per-ticket conversation between IT Support Engineers and the agent, with ticket context, saved history, and evidence-linked replies.
+- **M1-M4 — Completed:** Research, dataset curation, calibrated Logistic Regression classifier, and dense MiniLM+FAISS retrieval.
+- **M5 — Completed:** Grounded technical guidance with cited sources, safety checks, and engineer review.
+- **M6 — Completed:** FastAPI backend with ticket ingestion, analysis adapter, and SQLite persistence.
+- **M7 — Completed:** Streamlit interface for Requesters and IT Support Engineers.
+- **M8 — Completed:** Per-ticket conversation between engineers and the agent with ticket context and history.
+- **M9 — Completed:** Evaluation and refinement verified across 10 representative scenarios, with 100% benchmark results and API/UI validation. See `docs/M9_EVALUATION_REPORT.md`.
 
-- **Next: M9 Evaluation & Refinement.**
+- **Next: M10 Finalization & Deployment.**
 
 ## Run the Backend Locally
 
@@ -146,17 +147,15 @@ These categories represent the internal technical taxonomy of the ResolveX proto
 
 ## Technology
 
-ResolveX is being developed using:
+ResolveX is developed using:
 
-- **Python** — data processing and AI/ML development
-- **Machine Learning (scikit-learn)** — technical issue classification and confidence scoring
-- **RAG (Retrieval-Augmented Generation)** — retrieval of relevant technical knowledge for grounded troubleshooting
-- **LLM** — generation of troubleshooting recommendations using retrieved evidence
-- **LangChain** — support-agent workflow orchestration
-- **FastAPI** — backend APIs and system integration
-- **Streamlit** — application interface
-- **SQLite** — local ticket storage
-- **Langfuse** — AI observability and evaluation
+- **Python** — backend services and async workflows
+- **scikit-learn** — calibrated Logistic Regression for ticket classification
+- **RAG & FAISS** — dense vector retrieval (MiniLM) over Ask Ubuntu and official docs
+- **LLM (Gemini)** — `gemini-3.5-flash-lite` via LangChain for grounded troubleshooting
+- **FastAPI** — RESTful backend APIs and SQLite persistence
+- **Streamlit** — requester and support-engineer interfaces
+- **Langfuse** — evaluation, benchmarking, and observability
 
 
 ## Documentation

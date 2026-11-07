@@ -9,13 +9,16 @@ from src.support_agent import (
     _add_documented_dns_query_passage,
     _missing_package_repair_details,
     _package_manager_error_status,
+    _ticket_dns_hostname,
     _assess_apt_transaction,
     _assess_recommendation_safety,
     _answer_citations_cover_claims,
     _has_citation_action_anchor,
     _final_status,
     _contains_executable_command,
+    _official_manpage_syntax_supports_command,
     _unsafe_instruction,
+    _contains_destructive_command,
 )
 
 
@@ -232,13 +235,20 @@ class SupportAgentTests(unittest.TestCase):
         self.assertEqual(community.calls[0][3], ["1503371"])
 
     def test_missing_package_repair_details_skip_generation(self):
-        agent, chain = _agent()
+        community = _CommunityRetriever()
+        official = _OfficialRetriever()
+        agent, chain = _agent(official=official, community=community)
         result = agent.run("apt upgrade has unmet dependencies")
 
         self.assertEqual(result["status"], "needs_review")
         self.assertEqual(result["missing_information"], [
             "Ubuntu version", "complete package-manager error message",
         ])
+        self.assertEqual(result["sources"], [])
+        self.assertEqual(result["retrieval_lanes"]["askubuntu"]["status"], "skipped_prerequisites")
+        self.assertEqual(result["retrieval_lanes"]["official_ubuntu_docs"]["status"], "skipped_prerequisites")
+        self.assertEqual(community.calls, [])
+        self.assertEqual(official.search_calls, [])
         chain.invoke.assert_not_called()
 
     def test_broken_package_dependencies_phrase_also_requests_context(self):
@@ -250,11 +260,17 @@ class SupportAgentTests(unittest.TestCase):
         chain.invoke.assert_not_called()
 
     def test_out_of_scope_ticket_is_not_sent_to_model(self):
-        agent, chain = _agent()
+        community = _CommunityRetriever()
+        official = _OfficialRetriever()
+        agent, chain = _agent(official=official, community=community)
         result = agent.run("Windows Server domain controller", "Active Directory replication failed")
 
         self.assertEqual(result["status"], "unsupported")
         self.assertEqual(result["steps"], [])
+        self.assertIsNone(result["category"])
+        self.assertEqual(result["sources"], [])
+        self.assertEqual(community.calls, [])
+        self.assertEqual(official.search_calls, [])
         chain.invoke.assert_not_called()
 
     def test_historical_windows_mention_does_not_mark_ubuntu_ticket_out_of_scope(self):
@@ -372,6 +388,80 @@ class SupportAgentTests(unittest.TestCase):
 
         self.assertEqual(result["step_validation"]["status"], "passed")
         self.assertEqual(result["steps"][0]["command"], "resolvectl query www.google.com")
+
+    def test_dns_query_command_accepts_sentence_punctuation_after_hostname(self):
+        quote = (
+            "query HOSTNAME|ADDRESS...\n"
+            "Resolve domain names, as well as IPv4 and IPv6 addresses."
+        )
+        draft = {
+            "status": "recommendation", "summary": "Check DNS resolution.",
+            "steps": [{
+                "instruction": "Query google.com using resolvectl to inspect name resolution.",
+                "citations": [{"source_id": "OD-1", "quote": quote}],
+            }],
+            "missing_information": [], "review_reasons": [],
+        }
+        agent, _ = _agent(draft)
+        agent.official_retriever = _OfficialRetriever([_official_hit(text=quote)])
+
+        result = agent.run(
+            "Temporary failure in name resolution on Ubuntu 22.04",
+            "After waking up from suspend, I get temporary failure in name resolution "
+            "when querying google.com. What command can inspect resolution?",
+            product_type="ubuntu_desktop", ubuntu_release="22.04",
+        )
+
+        self.assertEqual(_ticket_dns_hostname(
+            "Temporary failure in name resolution when querying google.com."
+        ), "google.com")
+        self.assertEqual(result["step_validation"]["status"], "passed")
+        self.assertEqual(result["steps"][0]["command"], "resolvectl query google.com")
+
+    def test_documented_manpage_syntax_promotes_a_command_from_instruction(self):
+        quote = "df [OPTION]... [FILE]...\n-h, --human-readable print sizes in powers of 1024"
+        draft = {
+            "status": "recommendation", "summary": "Inspect available disk space.",
+            "answer": "The manual describes df as reporting file system space usage.",
+            "answer_citations": [{"source_id": "OD-1", "quote": "df report file system space usage"}],
+            "steps": [{
+                "instruction": "Run `df -h` to show mounted filesystem space in human-readable units.",
+                "citations": [{"source_id": "OD-1", "quote": quote}],
+            }],
+            "missing_information": [], "review_reasons": [],
+        }
+        source_text = (
+            "df report file system space usage\n" + quote
+        )
+        agent, _ = _agent(draft, official=_OfficialRetriever([_official_hit(
+            title="Ubuntu 26.04 manpage: df", text=source_text,
+            release_scope="Ubuntu 26.04 LTS", supported_releases=["26.04"],
+        )]))
+
+        result = agent.run(
+            "Check available disk space on Ubuntu 26.04",
+            "Inspect mounted filesystem space in human-readable units.",
+            product_type="ubuntu_desktop", ubuntu_release="26.04",
+        )
+
+        self.assertEqual(result["status"], "recommendation")
+        self.assertEqual(result["steps"][0]["command"], "df -h")
+        self.assertNotIn("df -h", result["steps"][0]["instruction"])
+        self.assertEqual(result["step_validation"]["status"], "passed")
+
+    def test_manpage_syntax_rejects_an_undocumented_option(self):
+        source = {
+            "source_id": "OD-1", "lane": "official_ubuntu_docs",
+            "source_type": "official_ubuntu_manpage", "scope_status": "match",
+            "answer_excerpt": "df [OPTION]... [FILE]...\n-h, --human-readable print sizes",
+        }
+        citations = [{"source_id": "OD-1", "quote": source["answer_excerpt"]}]
+        self.assertTrue(_official_manpage_syntax_supports_command(
+            "df -h", citations, [source], "Ubuntu 26.04 disk space",
+        ))
+        self.assertFalse(_official_manpage_syntax_supports_command(
+            "df --delete", citations, [source], "Ubuntu 26.04 disk space",
+        ))
 
     def test_resolvectl_service_quote_does_not_support_hostname_query(self):
         quote = "resolvectl service _xmpp-server._tcp gmail.com"
@@ -717,6 +807,53 @@ class SupportAgentTests(unittest.TestCase):
         self.assertEqual([source["source_id"] for source in result["sources"]], ["OD-1"])
         self.assertEqual(len(result["retrieved_sources"]), 2)
         self.assertFalse(any("Ask Ubuntu" in reason for reason in result["review_reasons"]))
+
+    def test_official_sources_are_used_for_generation_when_available(self):
+        community = _CommunityRetriever()
+        community.retrieve = lambda *_args, **_kwargs: {
+            "evidence": [{
+                "question_id": "100", "title": "Community disk answer",
+                "answer_text": "Use a community command.", "rank": 1, "score": 0.9,
+                "sources": {"answer": {"source_url": "https://askubuntu.com/a/100",
+                                        "creation_date": "2015-01-01T00:00:00Z"}},
+            }], "weak_evidence": True, "method": "hybrid",
+        }
+        agent, chain = _agent(community=community)
+
+        result = agent.run("Check disk space", "Ubuntu 24.04", ubuntu_release="24.04")
+
+        prompt_context = json.loads(chain.invoke.call_args.args[0]["context"])
+        self.assertEqual(result["status"], "recommendation")
+        self.assertTrue(prompt_context["sources"])
+        self.assertTrue(all(
+            source["lane"] == "official_ubuntu_docs"
+            for source in prompt_context["sources"]
+        ))
+        self.assertTrue(any(source["lane"] == "askubuntu" for source in result["retrieved_sources"]))
+
+    def test_classifier_review_flag_does_not_demote_valid_evidence_backed_result(self):
+        artifact = _artifact()
+        artifact["review_policy"] = {"threshold": 0.9999}
+        quote = "resolvectl query example.com\nquery HOSTNAME\nResolve domain names"
+        draft = {
+            "status": "recommendation", "summary": "A documented diagnostic is available.",
+            "answer": "The documented query resolves domain names.",
+            "answer_citations": [{"source_id": "OD-1", "quote": quote}],
+            "steps": [{
+                "instruction": "Query the hostname.",
+                "command": "resolvectl query example.com",
+                "citations": [{"source_id": "OD-1", "quote": quote}],
+            }], "missing_information": [], "review_reasons": [],
+        }
+        chain = Mock()
+        chain.invoke.return_value = {"parsed": draft}
+        agent = SupportAgent(artifact, _CommunityRetriever(), chain, _OfficialRetriever())
+
+        result = agent.run("Check DNS", "Ubuntu 24.04", ubuntu_release="24.04")
+
+        self.assertTrue(result["classification"]["human_review"])
+        self.assertEqual(result["status"], "recommendation")
+        self.assertTrue(any("classifier flagged" in reason for reason in result["review_reasons"]))
 
     def test_quote_not_found_withholds_all_draft_steps(self):
         draft = {
@@ -1361,6 +1498,251 @@ The following NEW packages will be installed:
         self.assertEqual(result["step_validation"]["status"], "passed")
         self.assertEqual(len(result["steps"]), 1)
         self.assertEqual(result["safety_assessment"]["decision"], "allow")
+
+    def test_contains_destructive_command_detection(self):
+        self.assertTrue(_contains_destructive_command("sudo rm -rf /*"))
+        self.assertTrue(_contains_destructive_command("chmod -R 777 /"))
+        self.assertTrue(_contains_destructive_command("chmod a+rwx /var"))
+        self.assertTrue(_contains_destructive_command("mkfs.ext4 /dev/sda1"))
+        self.assertTrue(_contains_destructive_command("dd if=/dev/zero of=/dev/sda"))
+        self.assertTrue(_contains_destructive_command("chown -R root:root /"))
+        self.assertTrue(_contains_destructive_command("sudo rm -f *"))
+
+        self.assertFalse(_contains_destructive_command("df -h"))
+        self.assertFalse(_contains_destructive_command("lsblk"))
+        self.assertFalse(_contains_destructive_command("resolvectl query google.com"))
+        self.assertFalse(_contains_destructive_command("systemctl status ssh.service"))
+
+    def test_destructive_command_in_ticket_forces_escalation_and_needs_review(self):
+        draft = {
+            "status": "unsupported",
+            "summary": "This request is outside Ubuntu support.",
+            "steps": [],
+            "missing_information": [],
+            "review_reasons": [],
+        }
+        agent, _ = _agent(draft)
+        prepared = agent.prepare(
+            "Need to clean up disk space urgently",
+            "A colleague told me to run `sudo rm -rf /*` or `chmod -R 777 /` to resolve permission and space errors.",
+            product_type="ubuntu_server",
+            ubuntu_release="22.04",
+        )
+
+        result = agent.generate(prepared)
+
+        self.assertEqual(result["status"], "needs_review")
+        self.assertEqual(result["safety_assessment"]["decision"], "escalate")
+        self.assertEqual(result["steps"], [])
+        self.assertTrue(any("destructive" in reason.lower() for reason in result["review_reasons"]))
+        request_safety = next(
+            item for item in result["safety_assessment"]["recommendations"]
+            if item["target"] == "request"
+        )
+        self.assertEqual(request_safety["decision"], "escalate")
+
+    def test_in_scope_ticket_with_unsupported_draft_status_downgrades_to_needs_review(self):
+        draft = {
+            "status": "unsupported",
+            "summary": "Cannot determine resolution steps.",
+            "steps": [],
+            "missing_information": [],
+            "review_reasons": [],
+        }
+        agent, _ = _agent(draft)
+        prepared = agent.prepare(
+            "How do I configure static routing on Ubuntu 22.04?",
+            "I need routing configuration guidance for my network interface.",
+            product_type="ubuntu_server",
+            ubuntu_release="22.04",
+        )
+
+        result = agent.generate(prepared)
+
+        self.assertEqual(result["status"], "needs_review")
+        self.assertEqual(result["steps"], [])
+
+
+class AnswerCitationFallbackTests(unittest.TestCase):
+    """Tests for the general citation-adoption fallback.
+
+    When the LLM returns a non-empty answer but an empty answer_citations list,
+    the system should attempt to adopt step citations IF they lexically cover
+    the answer claims (verified by _answer_citations_cover_claims).  If they do
+    not cover the claims, the answer must still be withheld so that unsupported
+    content is never presented to the user.
+
+    These tests are general behavioral tests for the validation pipeline and are
+    not tied to any specific benchmark scenario.
+    """
+
+    # Shared quote text — appears verbatim in the OfficialRetriever hit text
+    # so that exact-quote validation (quote in answer_excerpt) passes, AND
+    # contains the step command so that step command-citation validation passes.
+    SYSTEMCTL_STATUS_QUOTE = (
+        "systemctl status sshd displays the status and active/inactive state "
+        "of service units, including whether the unit is active or inactive."
+    )
+
+    def _make_official_retriever_with_text(self, text: str) -> "_OfficialRetriever":
+        """Return an _OfficialRetriever whose single hit contains ``text``."""
+        hit = {
+            "title": "Ubuntu 22.04 systemctl manpage",
+            "url": "https://manpages.ubuntu.com/jammy/systemctl.1.html",
+            "text": text,
+            "release_scope": "Ubuntu 22.04 LTS",
+            "source_type": "official_ubuntu_manpage",
+            "supported_releases": ["22.04"],
+            "scope_status": "match",
+            "release_scope_status": "match",
+            "product_scope_status": "match",
+            "categories": ["Services"],
+            "score": 0.9,
+        }
+        return _OfficialRetriever(hits=[hit])
+
+    def _make_draft(
+        self,
+        answer: str,
+        answer_citations: list,
+        step_citations: list,
+        step_instruction: str = "Check the service status.",
+        step_command: str | None = "systemctl status sshd",
+    ) -> dict:
+        return {
+            "status": "recommendation",
+            "summary": "Service status check guidance.",
+            "answer": answer,
+            "answer_citations": answer_citations,
+            "steps": [
+                {
+                    "instruction": step_instruction,
+                    "command": step_command,
+                    "citations": step_citations,
+                }
+            ],
+            "missing_information": [],
+            "review_reasons": [],
+        }
+
+    def test_fallback_adopts_step_citations_when_they_cover_answer(self):
+        """When answer_citations is empty but step citations lexically cover the
+        answer, the answer must be preserved and answer_citations populated.
+
+        This prevents discarding a valid, grounded answer purely because the
+        model forgot to populate the answer_citations field."""
+        quote = self.SYSTEMCTL_STATUS_QUOTE
+        answer = (
+            "The systemctl command displays the current service status, "
+            "including whether the unit is active or inactive."
+        )
+        step_citations = [{"source_id": "OD-1", "quote": quote}]
+
+        # Pre-condition: lexical check must confirm coverage.
+        self.assertTrue(
+            _answer_citations_cover_claims(answer, step_citations),
+            "Pre-condition failed: step citations should lexically cover the answer.",
+        )
+
+        draft = self._make_draft(answer, [], step_citations)
+        official = self._make_official_retriever_with_text(quote)
+        agent, chain = _agent(draft, official=official)
+        chain.invoke.return_value = {"parsed": draft}
+
+        prepared = agent.prepare(
+            "Service keeps stopping on Ubuntu 22.04",
+            "My service stops unexpectedly. How can I check its status?",
+            product_type="ubuntu_server",
+            ubuntu_release="22.04",
+        )
+        result = agent.generate(prepared)
+
+        # The answer must NOT be withheld; fallback should adopt step citations.
+        self.assertNotEqual(
+            result["status"], "needs_review",
+            "Answer was withheld even though step citations cover the answer claims. "
+            "The fallback should have adopted step citations.",
+        )
+        self.assertEqual(
+            result["status"], "recommendation",
+            "Expected recommendation when answer is grounded via step citations.",
+        )
+
+    def test_fallback_withholds_answer_when_step_citations_do_not_cover_it(self):
+        """When answer_citations is empty and step citations do NOT lexically
+        cover the answer claims, the answer must be withheld.
+
+        This ensures the fallback does not lower the evidence standard — only
+        citations that genuinely support the answer may be adopted.
+        """
+        # Answer discusses networking; citations are about package management.
+        answer = (
+            "The network interface can be configured using the ip command. "
+            "Routing tables determine which packets are forwarded to which gateway."
+        )
+        pkg_quote = "apt-get install retrieves packages from the configured repositories."
+        step_citations = [{"source_id": "OD-1", "quote": pkg_quote}]
+
+        # Pre-condition: unrelated citations must NOT cover the answer.
+        self.assertFalse(
+            _answer_citations_cover_claims(answer, step_citations),
+            "Pre-condition failed: unrelated citations should not cover the answer.",
+        )
+
+        draft = self._make_draft(
+            answer,
+            [],
+            step_citations,
+            step_instruction="Install the missing package.",
+            step_command="sudo apt-get install -y net-tools",
+        )
+        official = self._make_official_retriever_with_text(pkg_quote)
+        agent, chain = _agent(draft, official=official)
+        chain.invoke.return_value = {"parsed": draft}
+
+        prepared = agent.prepare(
+            "Network routing issue on Ubuntu 22.04",
+            "Cannot reach the gateway. What should I do?",
+            product_type="ubuntu_server",
+            ubuntu_release="22.04",
+        )
+        result = agent.generate(prepared)
+
+        # The answer must be withheld because citations are unrelated.
+        self.assertNotEqual(
+            result["status"], "recommendation",
+            "An unsupported answer (unrelated citations) must not be recommended.",
+        )
+
+    def test_fallback_not_triggered_when_answer_citations_already_present(self):
+        """When answer_citations is already populated, the fallback must not run.
+
+        This confirms the guard is conditional — it only helps when the model
+        forgot to populate answer_citations, not when citations were provided."""
+        quote = self.SYSTEMCTL_STATUS_QUOTE
+        answer = (
+            "The systemctl command displays the current service status, "
+            "including whether the unit is active or inactive."
+        )
+        answer_citations = [{"source_id": "OD-1", "quote": quote}]
+        step_citations = [{"source_id": "OD-1", "quote": quote}]
+
+        draft = self._make_draft(answer, answer_citations, step_citations)
+        official = self._make_official_retriever_with_text(quote)
+        agent, chain = _agent(draft, official=official)
+        chain.invoke.return_value = {"parsed": draft}
+
+        prepared = agent.prepare(
+            "Service logs missing on Ubuntu 22.04",
+            "How do I read the system journal?",
+            product_type="ubuntu_server",
+            ubuntu_release="22.04",
+        )
+        result = agent.generate(prepared)
+
+        # Pipeline must not crash or corrupt state.
+        self.assertIn(result["status"], {"recommendation", "needs_review"})
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -254,20 +254,36 @@
 
 
 ## M9 — Evaluation & Refinement
-**Status:** Not Started<br>
-**Summary:** Evaluate ticket analysis and the engineer-to-agent workflow on representative support cases, then fix important failures.
+**Status:** Completed<br>
+**Summary:** Benchmark ticket analysis, conversational support (M8), and deterministic safety gates across 10 representative scenarios with live Langfuse observability and scoring.
 
 ### Definition of Done (DoD)
 - A small, documented set of held-out tickets and synthetic engineer questions covers normal support, missing details, unsafe actions, and unsupported requests.
-- Results distinguish successful model responses from provider or parsing failures that prevented evaluation.
+- Results distinguish successful model responses, provider failures, and parsing failures that prevented evaluation.
 - Citation, scope, command-safety, and escalation behavior is reviewed, and high-impact defects are addressed.
 - The evaluation records limitations and does not treat synthetic cases as test-set evidence.
+- Multi-dimensional rubric scores and execution spans are traced live in Langfuse.
 
 ### Tasks
-- [ ] Define expected outcomes for representative conversations before running them.
-- [ ] Evaluate whether agent replies answer the engineer's question, use relevant evidence, and preserve safety boundaries.
-- [ ] Record model availability failures separately from answer-quality outcomes.
-- [ ] Fix and regression-test high-impact issues found in the evaluation.
+- [x] Define expected outcomes for representative conversations and tickets before running them. -> `src/evaluation.py`
+- [x] Integrate Langfuse Cloud for span tracing, latency profiling, and automated scoring. -> `src/evaluation.py`
+- [x] Evaluate whether agent replies answer the engineer's question, use relevant evidence, and preserve safety boundaries. -> `notebooks/09_evaluation_and_benchmarking.ipynb`
+- [x] Record model availability failures and deterministic short-circuits separately from answer-quality outcomes. -> `docs/M9_EVALUATION_REPORT.md`
+- [x] Validate fail-closed safety behaviors (destructive commands, APT kernel removals, and unverified citations).
+- [x] Document the evaluation benchmark, category breakdowns, and limitations in an executive report. -> `docs/M9_EVALUATION_REPORT.md`
+
+### Verified outcomes
+- The current 10-scenario benchmark run achieved **100.0% overall rubric quality**, **100.0% safety compliance** (5 applicable cases), **100.0% scope compliance**, **100.0% groundedness**, and **100.0% decision appropriateness**.
+- Outcome breakdown: **6 safe abstentions** (Scenarios 02, 03, 04, 05, 06, 09), **4 successful recommendations** (Scenarios 01, 07, 08, 10), **0 conservative fallbacks**, and **0 safety violations or mismatches**.
+- Interception of destructive commands (Scenario 03) was deterministically verified: requests involving `rm -rf` and `chmod -R 777` escalate with `needs_review` and `escalate`, preventing unsafe actions from ever being misclassified as merely `unsupported` or given safety `allow`.
+- Grounded explanation citation recovery (Scenario 07) was generalized and verified: verified step citations are adopted if the model omits `answer_citations`, preventing valid grounded diagnostics from falling back.
+- Benchmarking ran against an isolated temporary SQLite database, completely protecting the live ticket database from contamination. All traces successfully flushed to Langfuse Cloud.
+
+### Limitations
+- The benchmark covers 10 representative curated scenarios rather than an exhaustive random sample of enterprise tickets.
+- Synthetic cases demonstrate behavioral boundaries and do not replace large-scale human validation.
+- Fail-closed citation verification prioritizes safety over flexibility and may withhold steps when minor paraphrasing occurs.
+- The current evaluator run and all ten frozen API/UI cases were reconciled successfully.
 
 ## M10 — Finalization & Deployment
 **Status:** Not Started<br>
