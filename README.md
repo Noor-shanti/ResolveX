@@ -51,19 +51,21 @@ Employee checks request status
 - **M7 — Completed:** Streamlit interface for Requesters and IT Support Engineers.
 - **M8 — Completed:** Per-ticket conversation between engineers and the agent with ticket context and history.
 - **M9 — Completed:** Evaluation and refinement verified across 10 representative scenarios, with 100% benchmark results and API/UI validation. See `docs/M9_EVALUATION_REPORT.md`.
-
-- **Next: M10 Finalization & Deployment.**
+- **M10 — Completed:** Finalized and verified as a reproducible local prototype. Clean dependency setup, regression test suite (151 tests, 25 subtests), API health and classification endpoints, and the requester-to-engineer-to-requester UI workflow verified. See `docs/M10_VERIFICATION_REPORT.md`.
 
 ## Run the Backend Locally
 
-Install the project requirements, then start the API from the repository root:
+ResolveX is a **local prototype**, not a production deployment. The verified environment uses **Python 3.14**. Create and activate an environment, install requirements, then start the API from the repository root:
 
-```bash
+```powershell
+py -3.14 -m venv .venv
+.\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 uvicorn src.api:app --host 127.0.0.1 --port 8000
 ```
 
-Open `http://127.0.0.1:8000/docs` for the interactive API reference. The service expects the saved classifier, retrieval and Ubuntu documentation artifacts under `data/processed/`. Set `GEMINI_API_KEY` in the local `.env` file to enable ticket analysis; classification remains available without it.
+Open `http://127.0.0.1:8000/docs` for the interactive API reference. The service requires prebuilt classifier, retrieval, and Ubuntu-documentation artifacts under `data/processed/`; they are a prerequisite and are not downloaded or rebuilt during setup. Set `GEMINI_API_KEY` in the local `.env` file to enable ticket analysis. Never commit or share `.env`.
 
 The API supports health checks, classification, ticket analysis, ticket management, and an engineer-only ticket-agent conversation. Tickets, analysis, and internal conversation history are stored in `data/processed/support_tickets.sqlite3`; requesters use a private tracking code to check ticket status. The engineer endpoints have no sign-in in this local prototype.
 
@@ -71,8 +73,8 @@ The API supports health checks, classification, ticket analysis, ticket manageme
 
 With the API running as described above, start the interface from the repository root in a second terminal:
 
-```bash
-streamlit run app.py
+```powershell
+.\.venv\Scripts\streamlit run app.py
 ```
 
 The interface connects to `http://127.0.0.1:8000` by default. Requesters can submit tickets and check their status. The support team can review the analysis, ask the agent follow-up questions inside a ticket, and update its status. This internal conversation is not visible to the requester. The support-team inbox has no sign-in, so keep this prototype local and do not use it with real employee data.

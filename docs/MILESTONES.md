@@ -285,18 +285,28 @@
 - Fail-closed citation verification prioritizes safety over flexibility and may withhold steps when minor paraphrasing occurs.
 - The current evaluator run and all ten frozen API/UI cases were reconciled successfully.
 
-## M10 — Finalization & Deployment
-**Status:** Not Started<br>
-**Summary:** Prepare a reproducible, documented prototype for demonstration or deployment.
+## M10 — Finalization & Local Demo
+**Status:** Completed<br>
+**Summary:** Prepare a reproducible, documented local prototype for demonstration. Public deployment is outside this milestone's scope.
 
 ### Definition of Done (DoD)
-- Setup, configuration, and run instructions work from a clean environment.
+- Setup, configuration, and run instructions work in a clean Python environment when the required local processed artifacts are present.
 - Secrets and local data are handled safely, and prototype limitations are documented.
 - The API and application pass final smoke checks in the intended demo environment.
 - Final project documentation reflects the implemented features and evaluation results.
 
 ### Tasks
-- [ ] Verify clean setup and documented run instructions.
-- [ ] Review secret handling, local data, and access limitations.
-- [ ] Run final API and UI smoke checks in the demo environment.
-- [ ] Finalize the README and project documentation.
+- [x] Verify clean dependency setup and documented local run instructions.
+- [x] Review secret handling, local data, and access limitations.
+- [x] Run final API and UI smoke checks in the demo environment.
+- [x] Finalize the README and project documentation.
+
+### Execution Evidence
+- **Clean environment setup:** Pass. Dependencies installed in an isolated environment (`.m10-venv`) on Python 3.14.7, and core packages (`fastapi`, `streamlit`, `sklearn`, `faiss`, `langfuse`) imported successfully.
+- **Full test suite:** Pass. 151 tests passed, 25 subtests passed (`pytest --basetemp=.pytest_tmp -q`).
+- **API smoke test:** Pass. `/health/live` returned `alive`, `/health/ready` returned `ready` with all components (`classifier`, `retriever`, `support_agent`) true, `/openapi.json` confirmed ResolveX API v1.0.0, and `/api/v1/classify` correctly categorized a sample query.
+- **UI workflow:** Pass. End-to-end requester ticket creation (`M10 local smoke test`), requester tracking, engineer queue retrieval, agent ticket analysis with grounded evidence, ticket status resolution update, and requester status verification all executed without exceptions.
+- **Secret and local data review:** Pass. `.env` and `data/processed/support_tickets.sqlite3` are confirmed ignored by git; `.env.example` contains placeholders only with no exposed credentials.
+
+### Outcome & Prototype Limitations
+ResolveX was verified as a reproducible local prototype. All prototype boundaries remain in effect: the application has no authentication or authorization layer, no public or cloud deployment, and all AI-generated technical recommendations require support-engineer review before execution.

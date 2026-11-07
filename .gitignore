@@ -11,6 +11,8 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+.m10-venv/
+.pytest_tmp/
 
 # Jupyter
 .ipynb_checkpoints/
